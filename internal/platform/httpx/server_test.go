@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestServe_GracefulShutdownWaitsForInFlight(t *testing.T) {
 	srv := NewServer(testHTTPConfig(), h, discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, srv, ln, 5*time.Second, discard) }()
+	go func() { done <- Serve(ctx, srv, ln, Shutdown{Timeout: 5 * time.Second}, discard) }()
 
 	type result struct {
 		body string
@@ -116,7 +117,7 @@ func TestServe_ShutdownTimeout(t *testing.T) {
 	srv := NewServer(testHTTPConfig(), h, discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, srv, ln, 50*time.Millisecond, discard) }()
+	go func() { done <- Serve(ctx, srv, ln, Shutdown{Timeout: 50 * time.Millisecond}, discard) }()
 
 	reqCtx, reqCancel := context.WithCancel(context.Background())
 	t.Cleanup(reqCancel)
@@ -144,9 +145,55 @@ func TestServe_ListenerFailure(t *testing.T) {
 	_ = ln.Close()
 	srv := NewServer(testHTTPConfig(), http.NotFoundHandler(), discard)
 
-	err := Serve(context.Background(), srv, ln, time.Second, discard)
+	err := Serve(context.Background(), srv, ln, Shutdown{Timeout: time.Second}, discard)
 	if err == nil {
 		t.Fatal("expected error from closed listener")
+	}
+}
+
+// During the drain delay readiness is already failing (OnDrain ran) but the
+// server still accepts and serves new requests.
+func TestServe_DrainDelayKeepsServing(t *testing.T) {
+	var drained atomic.Bool
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
+
+	ln := listen(t)
+	srv := NewServer(testHTTPConfig(), h, discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, srv, ln, Shutdown{
+			Timeout:    time.Second,
+			DrainDelay: 300 * time.Millisecond,
+			OnDrain:    func() { drained.Store(true) },
+		}, discard)
+	}()
+
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for !drained.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("OnDrain was not called")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	resp, err := get(context.Background(), t, "http://"+ln.Addr().String())
+	if err != nil {
+		t.Fatalf("request during drain failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status during drain = %d", resp.StatusCode)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not finish after drain")
 	}
 }
 

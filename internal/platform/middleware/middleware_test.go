@@ -170,6 +170,7 @@ func TestAccessLog(t *testing.T) {
 		{"server error at error", "/v1/x", http.StatusServiceUnavailable, "", "ERROR", true},
 		{"client error at info", "/v1/x", http.StatusNotFound, "", "INFO", true},
 		{"probe hidden at info level", "/healthz", http.StatusOK, "ok", "", false},
+		{"probe 503 (draining) not an error", "/readyz", http.StatusServiceUnavailable, "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

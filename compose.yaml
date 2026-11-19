@@ -1,0 +1,24 @@
+# Local development stack. Credentials here are for local use only.
+# TODO(slice-10): add `migrate` (one-off) and `api` services built from the Dockerfile.
+name: medication-api
+
+services:
+  db:
+    image: postgres:18-alpine # keep in sync with internal/platform/dbtest.Image
+    environment:
+      POSTGRES_USER: medication
+      POSTGRES_PASSWORD: medication
+      POSTGRES_DB: medication
+    ports:
+      - "127.0.0.1:5432:5432" # loopback only: never expose the dev DB on the LAN
+    volumes:
+      # PostgreSQL 18 images keep data in a versioned subdirectory of this path.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medication -d medication"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:

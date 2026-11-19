@@ -23,10 +23,12 @@ func AccessLog(log *slog.Logger) Middleware {
 				status := sw.Status()
 				level := slog.LevelInfo
 				switch {
+				case quietPaths[r.URL.Path]:
+					// Probe 503s are expected while draining; real dependency
+					// failures are already logged by the readiness handler.
+					level = slog.LevelDebug
 				case status >= 500:
 					level = slog.LevelError
-				case quietPaths[r.URL.Path]:
-					level = slog.LevelDebug
 				}
 				log.LogAttrs(r.Context(), level, "http request",
 					slog.String("method", r.Method),

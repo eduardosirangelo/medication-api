@@ -28,12 +28,26 @@ func NewServer(cfg config.HTTP, h http.Handler, log *slog.Logger) *http.Server {
 	}
 }
 
+// Shutdown configures how Serve stops.
+type Shutdown struct {
+	// Timeout bounds how long in-flight requests get to finish.
+	Timeout time.Duration
+	// DrainDelay is waited after OnDrain and before refusing connections, while
+	// the server keeps serving normally. It gives load balancers time to notice
+	// the failing readiness probe and stop routing new requests here.
+	DrainDelay time.Duration
+	// OnDrain is called once shutdown begins (typically Readiness.SetDraining).
+	OnDrain func()
+}
+
 // Serve runs srv on ln until ctx is cancelled, then shuts down gracefully:
-// it stops accepting new connections and waits up to shutdownTimeout for
-// in-flight requests to finish before forcing connections closed.
+//
+//  1. OnDrain (readiness starts failing) and wait DrainDelay, still serving;
+//  2. stop accepting connections and wait up to Timeout for in-flight requests;
+//  3. if they don't finish in time, force-close the remaining connections.
 //
 // It returns nil after a clean shutdown, or the error that stopped the server.
-func Serve(ctx context.Context, srv *http.Server, ln net.Listener, shutdownTimeout time.Duration, log *slog.Logger) error {
+func Serve(ctx context.Context, srv *http.Server, ln net.Listener, sd Shutdown, log *slog.Logger) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	log.Info("http server listening", slog.String("addr", ln.Addr().String()))
@@ -45,12 +59,22 @@ func Serve(ctx context.Context, srv *http.Server, ln net.Listener, shutdownTimeo
 	case <-ctx.Done():
 	}
 
-	// TODO(slice-3): flip readiness to failing and wait a drain delay first, so
-	// load balancers stop routing here before we stop accepting connections.
-	log.Info("shutdown started", slog.String("timeout", shutdownTimeout.String()))
+	if sd.OnDrain != nil {
+		sd.OnDrain()
+	}
+	if sd.DrainDelay > 0 {
+		log.Info("draining: readiness failing, still serving", slog.String("delay", sd.DrainDelay.String()))
+		select {
+		case <-time.After(sd.DrainDelay):
+		case err := <-serveErr:
+			return fmt.Errorf("http server: %w", err)
+		}
+	}
+
+	log.Info("shutdown started", slog.String("timeout", sd.Timeout.String()))
 
 	// ctx is already cancelled; the shutdown deadline must be independent of it.
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sd.Timeout)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
