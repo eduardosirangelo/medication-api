@@ -1,0 +1,21 @@
+# Local Claude Code workspace (contains the original challenge PDF; never commit)
+.claude/
+
+# Build output
+/bin/
+/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.*
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
