@@ -19,7 +19,10 @@ type Repository interface {
 	// (all when after is uuid.Nil), newest first.
 	List(ctx context.Context, f ListFilter, after uuid.UUID, limit int) ([]Medication, error)
 
-	// TODO(slice-7): Update(ctx, id, expectedVersion, Spec) (Medication, error)
+	// Update replaces the spec only if the current version is one of
+	// expectedVersions, bumping the version. It returns ErrVersionMismatch
+	// when the row exists with another version.
+	Update(ctx context.Context, id uuid.UUID, expectedVersions []int64, spec Spec) (Medication, error)
 	// TODO(slice-8): Delete(ctx, id, expectedVersion *int64) error
 }
 
@@ -61,6 +64,23 @@ func (s *Service) List(ctx context.Context, p ListParams) (Page, error) {
 		return Page{Items: items[:p.Limit], HasMore: true}, nil
 	}
 	return Page{Items: items}, nil
+}
+
+// Replace is a full replacement (PUT): omitted optional fields are cleared.
+// expectedVersions comes from If-Match; an empty list can never match.
+func (s *Service) Replace(ctx context.Context, id uuid.UUID, expectedVersions []int64, in Input) (Medication, error) {
+	spec, err := NewSpec(in)
+	if err != nil {
+		return Medication{}, err
+	}
+	if len(expectedVersions) == 0 {
+		return Medication{}, ErrVersionMismatch
+	}
+	m, err := s.repo.Update(ctx, id, expectedVersions, spec)
+	if err != nil {
+		return Medication{}, fmt.Errorf("replace medication %s: %w", id, err)
+	}
+	return m, nil
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Medication, error) {

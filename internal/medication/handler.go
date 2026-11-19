@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -30,7 +31,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+basePath, h.list)
 	mux.HandleFunc("GET "+basePath+"/{id}", h.get)
 	// TODO: ndc and rxcui filters on the list (exact match, already indexed for ndc).
-	// TODO(slice-7): PUT    /v1/medications/{id}  If-Match required
+	mux.HandleFunc("PUT "+basePath+"/{id}", h.replace)
 	// TODO(slice-8): DELETE /v1/medications/{id}  soft delete, If-Match optional
 	// TODO: PATCH with application/merge-patch+json (RFC 7396).
 	// TODO: /v1/medications/{id}/products child resource holding every NDC
@@ -98,6 +99,35 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	httpx.WriteJSON(w, r, http.StatusOK, toResponse(m))
+}
+
+// If-Match is required so a client can never overwrite a change it hasn't
+// seen (lost update). "*" is refused too: it would match any version and
+// defeat that purpose.
+func (h *Handler) replace(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r)
+	if !ok {
+		h.writeError(w, r, ErrNotFound)
+		return
+	}
+	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
+	if ifMatch == "" || ifMatch == "*" {
+		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusPreconditionRequired,
+			"An If-Match header with the ETag of the current version is required; fetch the medication first."))
+		return
+	}
+	var req medicationRequest
+	if p := httpx.DecodeJSON(r, &req); p != nil {
+		httpx.WriteProblem(w, r, *p)
+		return
+	}
+	m, err := h.svc.Replace(r.Context(), id, httpx.IfMatchVersions(ifMatch), req.toInput())
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", httpx.ETag(m.Version))
 	httpx.WriteJSON(w, r, http.StatusOK, toResponse(m))
 }
 

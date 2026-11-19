@@ -1,6 +1,9 @@
 package httpx
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestETag(t *testing.T) {
 	if got := ETag(3); got != `"3"` {
@@ -8,29 +11,47 @@ func TestETag(t *testing.T) {
 	}
 }
 
-func TestMatchAndNoneMatch(t *testing.T) {
+func TestNoneMatch(t *testing.T) {
 	etag := ETag(3)
+	tests := map[string]bool{
+		``:          false,
+		`"3"`:       true,
+		`"4"`:       false,
+		`*`:         true,
+		`W/"3"`:     true, // weak comparison
+		`"1", "3"`:  true,
+		`"1",W/"3"`: true,
+		` "3" `:     true,
+		`3`:         false, // unquoted is not an entity tag
+	}
+	for header, want := range tests {
+		if got := NoneMatch(header, etag); got != want {
+			t.Errorf("NoneMatch(%q) = %v, want %v", header, got, want)
+		}
+	}
+}
+
+func TestIfMatchVersions(t *testing.T) {
 	tests := []struct {
-		header        string
-		wantMatch     bool // If-Match, strong comparison
-		wantNoneMatch bool // If-None-Match, weak comparison
+		header string
+		want   []int64
 	}{
-		{``, false, false},
-		{`"3"`, true, true},
-		{`"4"`, false, false},
-		{`*`, true, true},
-		{`W/"3"`, false, true}, // weak tags never satisfy If-Match
-		{`"1", "3"`, true, true},
-		{`"1",W/"3"`, false, true},
-		{` "3" `, true, true},
-		{`3`, false, false}, // unquoted is not a valid entity tag
+		{``, nil},
+		{`"3"`, []int64{3}},
+		{` "3" `, []int64{3}},
+		{`"1", "3"`, []int64{1, 3}},
+		{`W/"3"`, nil}, // weak tags never satisfy If-Match
+		{`W/"2", "3"`, []int64{3}},
+		{`3`, nil},     // unquoted
+		{`"abc"`, nil}, // not one of our tags
+		{`"0"`, nil},   // versions start at 1
+		{`"-1"`, nil},
+		{`"99999999999999999999"`, nil}, // overflow
+		{`*`, nil},                      // handled by the caller
 	}
 	for _, tt := range tests {
-		if got := Match(tt.header, etag); got != tt.wantMatch {
-			t.Errorf("Match(%q) = %v, want %v", tt.header, got, tt.wantMatch)
-		}
-		if got := NoneMatch(tt.header, etag); got != tt.wantNoneMatch {
-			t.Errorf("NoneMatch(%q) = %v, want %v", tt.header, got, tt.wantNoneMatch)
+		if got := IfMatchVersions(tt.header); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("IfMatchVersions(%q) = %v, want %v", tt.header, got, tt.want)
 		}
 	}
 }

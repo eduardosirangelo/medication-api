@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -492,5 +493,95 @@ func TestPostgres_ListUsesIndexes(t *testing.T) {
 		if !strings.Contains(plan.String(), tt.wantIndex) {
 			t.Errorf("filter %+v: plan does not use %s:\n%s", tt.filter, tt.wantIndex, plan.String())
 		}
+	}
+}
+
+func TestPostgres_Update(t *testing.T) {
+	spec := func(name string) Spec {
+		return mustSpec(t, Input{Name: name, Form: "tablet", Dosage: DosageInput{Value: "10", Unit: "mg"}, NDC: "12345-6789-01"})
+	}
+
+	t.Run("bumps version, advances updated_at, keeps created_at", func(t *testing.T) {
+		repo := freshRepo(t)
+		created := createNamed(t, repo, "Before", "tablet")
+		time.Sleep(2 * time.Millisecond)
+		updated, err := repo.Update(t.Context(), created.ID, []int64{1}, spec("After"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Version != 2 || updated.Name != "After" || updated.NDC != "12345678901" ||
+			!updated.CreatedAt.Equal(created.CreatedAt) || !updated.UpdatedAt.After(created.UpdatedAt) {
+			t.Errorf("created %+v\nupdated %+v", created, updated)
+		}
+	})
+
+	t.Run("stale version, missing and soft-deleted rows", func(t *testing.T) {
+		repo := freshRepo(t)
+		m := createNamed(t, repo, "X", "tablet")
+		if _, err := repo.Update(t.Context(), m.ID, []int64{2, 3}, spec("Y")); !errors.Is(err, ErrVersionMismatch) {
+			t.Errorf("stale: %v", err)
+		}
+		if _, err := repo.Update(t.Context(), uuid.New(), []int64{1}, spec("Y")); !errors.Is(err, ErrNotFound) {
+			t.Errorf("missing: %v", err)
+		}
+		if _, err := testPool.Exec(t.Context(), "UPDATE medications SET deleted_at = now() WHERE id = $1", m.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.Update(t.Context(), m.ID, []int64{1}, spec("Y")); !errors.Is(err, ErrNotFound) {
+			t.Errorf("soft-deleted: %v", err)
+		}
+	})
+
+	t.Run("unique violations map to domain errors", func(t *testing.T) {
+		repo := freshRepo(t)
+		taken := createNamed(t, repo, "Taken", "tablet")
+		other := createNamed(t, repo, "Other", "tablet")
+		if _, err := repo.Update(t.Context(), taken.ID, []int64{1}, spec("Taken")); err != nil {
+			t.Fatal(err) // now holds the NDC
+		}
+		if _, err := repo.Update(t.Context(), other.ID, []int64{1}, spec("Taken")); !errors.Is(err, ErrDuplicate) {
+			t.Errorf("identity: %v", err)
+		}
+		if _, err := repo.Update(t.Context(), other.ID, []int64{1}, spec("Different")); !errors.Is(err, ErrDuplicateNDC) {
+			t.Errorf("ndc: %v", err)
+		}
+	})
+}
+
+// The lost-update guarantee: N writers holding the same ETag race; exactly
+// one wins and every other one is told its version is stale.
+func TestPostgres_UpdateConcurrentWritersExactlyOneWins(t *testing.T) {
+	repo := freshRepo(t)
+	m := createNamed(t, repo, "Contended", "tablet")
+
+	const writers = 10
+	results := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Go(func() {
+			s := mustSpec(t, Input{Name: "Writer " + strconv.Itoa(i), Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}})
+			_, err := repo.Update(t.Context(), m.ID, []int64{1}, s)
+			results <- err
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	var won, stale int
+	for err := range results {
+		switch {
+		case err == nil:
+			won++
+		case errors.Is(err, ErrVersionMismatch):
+			stale++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if won != 1 || stale != writers-1 {
+		t.Fatalf("won = %d, stale = %d; want 1 and %d", won, stale, writers-1)
+	}
+	if got, _ := repo.Get(t.Context(), m.ID); got.Version != 2 {
+		t.Errorf("final version = %d, want 2", got.Version)
 	}
 }

@@ -414,3 +414,116 @@ func TestList_CursorFromOtherFiltersIs400(t *testing.T) {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+const ibuprofenJSON = `{"name":"Ibuprofen","form":"tablet","dosage":{"value":400,"unit":"mg"},"route":"oral"}`
+
+func createForReplace(t *testing.T) (*testAPI, string) {
+	t.Helper()
+	api := newRandomIDAPI(t)
+	rec := api.do(t, http.MethodPost, "/v1/medications",
+		`{"name":"Paracetamol","form":"tablet","dosage":{"value":500,"unit":"mg"},"ndc":"0071-0155-23"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed: %d", rec.Code)
+	}
+	return api, rec.Header().Get("Location")
+}
+
+func TestReplace_200BumpsVersionAndClearsOmittedFields(t *testing.T) {
+	api, path := createForReplace(t)
+	rec := api.do(t, http.MethodPut, path, ibuprofenJSON, "If-Match", `"1"`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("ETag") != `"2"` {
+		t.Errorf("ETag = %q", rec.Header().Get("ETag"))
+	}
+	body := decodeBody[medicationResponse](t, rec)
+	if body.Name != "Ibuprofen" || body.Version != 2 || body.Route != "oral" || body.NDC != "" {
+		t.Errorf("PUT is a full replacement (ndc omitted → cleared): %+v", body)
+	}
+	if !body.UpdatedAt.After(body.CreatedAt) {
+		t.Error("updated_at must advance")
+	}
+	if got := api.do(t, http.MethodGet, path, ""); got.Body.String() != rec.Body.String() {
+		t.Errorf("GET after PUT differs:\n%s\n%s", got.Body.String(), rec.Body.String())
+	}
+}
+
+func TestReplace_Preconditions(t *testing.T) {
+	tests := []struct {
+		name    string
+		ifMatch string
+		want    int
+	}{
+		{"missing If-Match", "", http.StatusPreconditionRequired},
+		{"wildcard refused", "*", http.StatusPreconditionRequired},
+		{"stale version", `"7"`, http.StatusPreconditionFailed},
+		{"weak tag never matches", `W/"1"`, http.StatusPreconditionFailed},
+		{"garbage tag", `abc`, http.StatusPreconditionFailed},
+		{"list containing current", `"9", "1"`, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api, path := createForReplace(t)
+			var headers []string
+			if tt.ifMatch != "" {
+				headers = []string{"If-Match", tt.ifMatch}
+			}
+			rec := api.do(t, http.MethodPut, path, ibuprofenJSON, headers...)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestReplace_SecondWriterWithSameETagGets412(t *testing.T) {
+	api, path := createForReplace(t)
+	if rec := api.do(t, http.MethodPut, path, ibuprofenJSON, "If-Match", `"1"`); rec.Code != http.StatusOK {
+		t.Fatalf("first writer: %d", rec.Code)
+	}
+	rec := api.do(t, http.MethodPut, path, paracetamolJSON, "If-Match", `"1"`)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("second writer: %d", rec.Code)
+	}
+	if p := decodeBody[httpx.Problem](t, rec); !strings.Contains(p.Detail, "fetch it again") {
+		t.Errorf("detail should tell the client how to recover: %q", p.Detail)
+	}
+}
+
+func TestReplace_Errors(t *testing.T) {
+	t.Run("404 unknown id", func(t *testing.T) {
+		api, _ := createForReplace(t)
+		rec := api.do(t, http.MethodPut, "/v1/medications/019a9c3e-7a10-7000-8000-00000000ffff", ibuprofenJSON, "If-Match", `"1"`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	})
+	t.Run("404 malformed id", func(t *testing.T) {
+		api, _ := createForReplace(t)
+		if rec := api.do(t, http.MethodPut, "/v1/medications/nope", ibuprofenJSON, "If-Match", `"1"`); rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	})
+	t.Run("422 invalid body", func(t *testing.T) {
+		api, path := createForReplace(t)
+		if rec := api.do(t, http.MethodPut, path, `{"name":""}`, "If-Match", `"1"`); rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	})
+	t.Run("409 when taking another entry's identity", func(t *testing.T) {
+		api, path := createForReplace(t)
+		api.do(t, http.MethodPost, "/v1/medications", ibuprofenJSON)
+		if rec := api.do(t, http.MethodPut, path, ibuprofenJSON, "If-Match", `"1"`); rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	})
+	t.Run("keeping its own identity and NDC is not a conflict", func(t *testing.T) {
+		api, path := createForReplace(t)
+		same := `{"name":"PARACETAMOL","form":"tablet","dosage":{"value":500,"unit":"mg"},"ndc":"00071015523"}`
+		if rec := api.do(t, http.MethodPut, path, same, "If-Match", `"1"`); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}

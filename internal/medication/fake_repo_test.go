@@ -41,16 +41,46 @@ func (f *fakeRepo) Create(_ context.Context, m Medication) (Medication, error) {
 	if f.err != nil {
 		return Medication{}, f.err
 	}
-	for _, existing := range f.rows {
-		if identityKey(existing.Spec) == identityKey(m.Spec) {
-			return Medication{}, ErrDuplicate
-		}
-		if m.NDC != "" && existing.NDC == m.NDC {
-			return Medication{}, ErrDuplicateNDC
-		}
+	if err := f.checkUnique(uuid.Nil, m.Spec); err != nil { // a create has no "self" to skip
+		return Medication{}, err
 	}
 	m.Version, m.CreatedAt, m.UpdatedAt = 1, f.now, f.now
 	f.rows[m.ID] = m
+	return m, nil
+}
+
+func (f *fakeRepo) checkUnique(self uuid.UUID, s Spec) error {
+	for id, existing := range f.rows {
+		switch {
+		case id == self:
+		case identityKey(existing.Spec) == identityKey(s):
+			return ErrDuplicate
+		case s.NDC != "" && existing.NDC == s.NDC:
+			return ErrDuplicateNDC
+		}
+	}
+	return nil
+}
+
+func (f *fakeRepo) Update(_ context.Context, id uuid.UUID, expected []int64, s Spec) (Medication, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return Medication{}, f.err
+	}
+	m, ok := f.rows[id]
+	switch {
+	case !ok:
+		return Medication{}, ErrNotFound
+	case !slices.Contains(expected, m.Version):
+		return Medication{}, ErrVersionMismatch
+	}
+	if err := f.checkUnique(id, s); err != nil {
+		return Medication{}, err
+	}
+	m.Spec, m.Version, m.UpdatedAt = s, m.Version+1, m.UpdatedAt.Add(time.Minute)
+	f.rows[id] = m
 	return m, nil
 }
 

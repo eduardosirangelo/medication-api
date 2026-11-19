@@ -127,3 +127,39 @@ func TestService_List_FetchesOneExtraToDetectMore(t *testing.T) {
 		t.Fatalf("exact fit must not report more: %d items, more=%v", len(page.Items), page.HasMore)
 	}
 }
+
+func TestService_Replace(t *testing.T) {
+	valid := Input{Name: "Ibuprofen", Form: "tablet", Dosage: DosageInput{Value: "400", Unit: "mg"}}
+
+	t.Run("validation runs before the repository", func(t *testing.T) {
+		repo := newFakeRepo()
+		_, err := newTestService(repo).Replace(t.Context(), fixedID, []int64{1}, Input{})
+		var verr *ValidationError
+		if !errors.As(err, &verr) || repo.calls != 0 {
+			t.Fatalf("err = %v, repo calls = %d", err, repo.calls)
+		}
+	})
+
+	t.Run("no usable If-Match versions never matches", func(t *testing.T) {
+		repo := newFakeRepo()
+		_, err := newTestService(repo).Replace(t.Context(), fixedID, nil, valid)
+		if !errors.Is(err, ErrVersionMismatch) || repo.calls != 0 {
+			t.Fatalf("err = %v, repo calls = %d", err, repo.calls)
+		}
+	})
+
+	t.Run("bumps version and wraps repository errors", func(t *testing.T) {
+		repo := newFakeRepo()
+		svc := newTestService(repo)
+		if _, err := svc.Create(t.Context(), Input{Name: "X", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}}); err != nil {
+			t.Fatal(err)
+		}
+		m, err := svc.Replace(t.Context(), fixedID, []int64{1}, valid)
+		if err != nil || m.Version != 2 || m.Name != "Ibuprofen" {
+			t.Fatalf("replace: %+v, %v", m, err)
+		}
+		if _, err := svc.Replace(t.Context(), fixedID, []int64{1}, valid); !errors.Is(err, ErrVersionMismatch) {
+			t.Fatalf("stale version: %v", err)
+		}
+	})
+}

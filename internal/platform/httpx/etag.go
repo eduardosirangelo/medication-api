@@ -12,28 +12,48 @@ func ETag(version int64) string {
 }
 
 // NoneMatch evaluates If-None-Match with the weak comparison (W/"3" equals "3").
-func NoneMatch(header, etag string) bool { return matches(header, etag, false) }
-
-// Match evaluates If-Match with the strong comparison (weak tags never match).
-func Match(header, etag string) bool { return matches(header, etag, true) }
-
-// A plain comma split is enough because our tags are digits only.
-func matches(header, etag string, strong bool) bool {
+func NoneMatch(header, etag string) bool {
 	header = strings.TrimSpace(header)
 	if header == "*" {
 		return true
 	}
-	for _, candidate := range strings.Split(header, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if strings.HasPrefix(candidate, "W/") {
-			if strong {
-				continue
-			}
-			candidate = strings.TrimPrefix(candidate, "W/")
-		}
-		if candidate != "" && candidate == etag {
+	for _, candidate := range splitTags(header) {
+		if strings.TrimPrefix(candidate, "W/") == etag {
 			return true
 		}
 	}
 	return false
+}
+
+// IfMatchVersions returns the versions named by strong tags in an If-Match
+// value. The comparison itself happens in the database update, so the check
+// and the write are one atomic step; weak or malformed tags can never match
+// under the strong comparison and are skipped.
+func IfMatchVersions(header string) []int64 {
+	var versions []int64
+	for _, candidate := range splitTags(header) {
+		if v, ok := parseStrongETag(candidate); ok {
+			versions = append(versions, v)
+		}
+	}
+	return versions
+}
+
+func parseStrongETag(tag string) (int64, bool) {
+	if len(tag) < 3 || tag[0] != '"' || tag[len(tag)-1] != '"' {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(tag[1:len(tag)-1], 10, 64)
+	return v, err == nil && v > 0
+}
+
+// A plain comma split is enough because our tags are digits only.
+func splitTags(header string) []string {
+	var tags []string
+	for _, t := range strings.Split(header, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }

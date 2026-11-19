@@ -63,6 +63,47 @@ func (r *PostgresRepository) Create(ctx context.Context, m Medication) (Medicati
 	return created, nil
 }
 
+// The version check lives in the UPDATE's WHERE clause so checking and
+// writing are one atomic step: two concurrent writers holding the same ETag
+// can never both succeed.
+func (r *PostgresRepository) Update(ctx context.Context, id uuid.UUID, expectedVersions []int64, spec Spec) (Medication, error) {
+	perValue, perUnit := perArgs(spec.Dosage)
+	row := r.pool.QueryRow(ctx, `
+		UPDATE medications
+		SET name = $3, dosage_value = $4::numeric, dosage_unit = $5,
+		    dosage_per_value = $6::numeric, dosage_per_unit = $7, form = $8,
+		    ndc = $9, rxcui = $10, route = $11,
+		    version = version + 1, updated_at = now()
+		WHERE id = $1 AND deleted_at IS NULL AND version = ANY($2::bigint[])
+		RETURNING `+selectColumns,
+		id, expectedVersions, spec.Name, spec.Dosage.Value.String(), string(spec.Dosage.Unit),
+		perValue, perUnit, string(spec.Form), nullable(spec.NDC), nullable(spec.RxCUI), nullable(spec.Route),
+	)
+	updated, err := scanMedication(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Medication{}, r.whyNotUpdated(ctx, id)
+	}
+	if err != nil {
+		return Medication{}, fmt.Errorf("update medication: %w", translateUniqueViolation(err))
+	}
+	return updated, nil
+}
+
+// Only reached on the failure path, so the happy path stays one round trip.
+func (r *PostgresRepository) whyNotUpdated(ctx context.Context, id uuid.UUID) error {
+	var exists bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM medications WHERE id = $1 AND deleted_at IS NULL)`, id).Scan(&exists)
+	switch {
+	case err != nil:
+		return fmt.Errorf("check medication existence: %w", err)
+	case exists:
+		return ErrVersionMismatch
+	default:
+		return ErrNotFound
+	}
+}
+
 func (r *PostgresRepository) Get(ctx context.Context, id uuid.UUID) (Medication, error) {
 	row := r.pool.QueryRow(ctx, `
 		SELECT `+selectColumns+`
