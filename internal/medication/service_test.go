@@ -163,3 +163,46 @@ func TestService_Replace(t *testing.T) {
 		}
 	})
 }
+
+func TestService_Delete(t *testing.T) {
+	create := func(t *testing.T) (*fakeRepo, *Service) {
+		t.Helper()
+		repo := newFakeRepo()
+		svc := newTestService(repo)
+		if _, err := svc.Create(t.Context(), Input{Name: "X", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}}); err != nil {
+			t.Fatal(err)
+		}
+		return repo, svc
+	}
+
+	t.Run("unconditional", func(t *testing.T) {
+		_, svc := create(t)
+		if err := svc.Delete(t.Context(), fixedID); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Delete(t.Context(), fixedID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("second delete: %v", err)
+		}
+	})
+
+	t.Run("conditional with no usable versions never reaches the repository", func(t *testing.T) {
+		repo, svc := create(t)
+		before := repo.calls
+		if err := svc.DeleteIfVersion(t.Context(), fixedID, nil); !errors.Is(err, ErrVersionMismatch) {
+			t.Fatalf("err = %v", err)
+		}
+		if repo.calls != before {
+			t.Error("repository called")
+		}
+	})
+
+	t.Run("conditional stale then current", func(t *testing.T) {
+		_, svc := create(t)
+		if err := svc.DeleteIfVersion(t.Context(), fixedID, []int64{2}); !errors.Is(err, ErrVersionMismatch) {
+			t.Fatalf("stale: %v", err)
+		}
+		if err := svc.DeleteIfVersion(t.Context(), fixedID, []int64{1}); err != nil {
+			t.Fatalf("current: %v", err)
+		}
+	})
+}

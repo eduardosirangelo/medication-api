@@ -32,7 +32,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+basePath+"/{id}", h.get)
 	// TODO: ndc and rxcui filters on the list (exact match, already indexed for ndc).
 	mux.HandleFunc("PUT "+basePath+"/{id}", h.replace)
-	// TODO(slice-8): DELETE /v1/medications/{id}  soft delete, If-Match optional
+	mux.HandleFunc("DELETE "+basePath+"/{id}", h.remove)
+	// TODO: POST /v1/medications/{id}/restore for soft-deleted rows, and a
+	// retention job that purges them after the audit period.
 	// TODO: PATCH with application/merge-patch+json (RFC 7396).
 	// TODO: /v1/medications/{id}/products child resource holding every NDC
 	// (one per manufacturer/package) for this clinical drug.
@@ -129,6 +131,29 @@ func (h *Handler) replace(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", httpx.ETag(m.Version))
 	httpx.WriteJSON(w, r, http.StatusOK, toResponse(m))
+}
+
+// If-Match is optional on DELETE: deleting is not a lost-update risk the way
+// overwriting is, but a client that sends it gets the same protection as PUT.
+func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r)
+	if !ok {
+		h.writeError(w, r, ErrNotFound)
+		return
+	}
+	if err := h.deleteWithCondition(r, id); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) deleteWithCondition(r *http.Request, id uuid.UUID) error {
+	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
+	if ifMatch == "" || ifMatch == "*" {
+		return h.svc.Delete(r.Context(), id)
+	}
+	return h.svc.DeleteIfVersion(r.Context(), id, httpx.IfMatchVersions(ifMatch))
 }
 
 // A malformed ID can't name an existing resource, so it is a 404 like any

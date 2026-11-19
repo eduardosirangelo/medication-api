@@ -81,7 +81,7 @@ func (r *PostgresRepository) Update(ctx context.Context, id uuid.UUID, expectedV
 	)
 	updated, err := scanMedication(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Medication{}, r.whyNotUpdated(ctx, id)
+		return Medication{}, r.whyUnchanged(ctx, id)
 	}
 	if err != nil {
 		return Medication{}, fmt.Errorf("update medication: %w", translateUniqueViolation(err))
@@ -89,8 +89,29 @@ func (r *PostgresRepository) Update(ctx context.Context, id uuid.UUID, expectedV
 	return updated, nil
 }
 
+// Soft delete keeps the row for audit and lets the partial unique indexes
+// release its name/dosage/form and NDC, so the product can be re-created.
+// The version is bumped so any ETag a client still holds becomes stale.
+// A static "($2 IS NULL OR ...)" is fine here, unlike in List: the primary
+// key alone already picks a single row.
+func (r *PostgresRepository) Delete(ctx context.Context, id uuid.UUID, expectedVersions []int64) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE medications
+		SET deleted_at = now(), updated_at = now(), version = version + 1
+		WHERE id = $1 AND deleted_at IS NULL
+		  AND ($2::bigint[] IS NULL OR version = ANY($2::bigint[]))`,
+		id, expectedVersions)
+	if err != nil {
+		return fmt.Errorf("delete medication: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return r.whyUnchanged(ctx, id)
+	}
+	return nil
+}
+
 // Only reached on the failure path, so the happy path stays one round trip.
-func (r *PostgresRepository) whyNotUpdated(ctx context.Context, id uuid.UUID) error {
+func (r *PostgresRepository) whyUnchanged(ctx context.Context, id uuid.UUID) error {
 	var exists bool
 	err := r.pool.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM medications WHERE id = $1 AND deleted_at IS NULL)`, id).Scan(&exists)

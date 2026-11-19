@@ -84,6 +84,26 @@ func (f *fakeRepo) Update(_ context.Context, id uuid.UUID, expected []int64, s S
 	return m, nil
 }
 
+// The fake drops deleted rows outright: callers can't observe the
+// difference, and soft-delete SQL is covered by the integration tests.
+func (f *fakeRepo) Delete(_ context.Context, id uuid.UUID, expected []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	m, ok := f.rows[id]
+	switch {
+	case !ok:
+		return ErrNotFound
+	case expected != nil && !slices.Contains(expected, m.Version):
+		return ErrVersionMismatch
+	}
+	delete(f.rows, id)
+	return nil
+}
+
 func (f *fakeRepo) List(_ context.Context, filter ListFilter, after uuid.UUID, limit int) ([]Medication, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

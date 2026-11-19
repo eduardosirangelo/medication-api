@@ -527,3 +527,69 @@ func TestReplace_Errors(t *testing.T) {
 		}
 	})
 }
+
+func TestDelete(t *testing.T) {
+	tests := []struct {
+		name    string
+		ifMatch string
+		want    int
+	}{
+		{"no If-Match deletes", "", http.StatusNoContent},
+		{"wildcard deletes", "*", http.StatusNoContent},
+		{"current version deletes", `"1"`, http.StatusNoContent},
+		{"stale version refused", `"2"`, http.StatusPreconditionFailed},
+		{"weak tag refused", `W/"1"`, http.StatusPreconditionFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api, path := createForReplace(t)
+			var headers []string
+			if tt.ifMatch != "" {
+				headers = []string{"If-Match", tt.ifMatch}
+			}
+			rec := api.do(t, http.MethodDelete, path, "", headers...)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+			}
+			stillThere := api.do(t, http.MethodGet, path, "").Code == http.StatusOK
+			if deleted := tt.want == http.StatusNoContent; deleted == stillThere {
+				t.Errorf("deleted=%v but GET still finds it=%v", deleted, stillThere)
+			}
+			if tt.want == http.StatusNoContent && rec.Body.Len() != 0 {
+				t.Errorf("204 must have no body: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestDelete_GoneEverywhereAndCanBeRecreated(t *testing.T) {
+	api, path := createForReplace(t)
+	if rec := api.do(t, http.MethodDelete, path, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d", rec.Code)
+	}
+
+	checks := []struct {
+		name string
+		rec  *httptest.ResponseRecorder
+		want int
+	}{
+		{"second DELETE", api.do(t, http.MethodDelete, path, ""), http.StatusNotFound},
+		{"GET", api.do(t, http.MethodGet, path, ""), http.StatusNotFound},
+		{"PUT", api.do(t, http.MethodPut, path, ibuprofenJSON, "If-Match", `"1"`), http.StatusNotFound},
+		{"malformed id", api.do(t, http.MethodDelete, "/v1/medications/nope", ""), http.StatusNotFound},
+	}
+	for _, c := range checks {
+		if c.rec.Code != c.want {
+			t.Errorf("%s: status = %d, want %d", c.name, c.rec.Code, c.want)
+		}
+	}
+	if list := decodeBody[listBody](t, api.do(t, http.MethodGet, "/v1/medications", "")); len(list.Data) != 0 {
+		t.Errorf("deleted medication still listed: %+v", list.Data)
+	}
+
+	again := api.do(t, http.MethodPost, "/v1/medications",
+		`{"name":"Paracetamol","form":"tablet","dosage":{"value":500,"unit":"mg"},"ndc":"0071-0155-23"}`)
+	if again.Code != http.StatusCreated || again.Header().Get("Location") == path {
+		t.Fatalf("re-create: %d, Location %q (must be a new id)", again.Code, again.Header().Get("Location"))
+	}
+}

@@ -23,7 +23,9 @@ type Repository interface {
 	// expectedVersions, bumping the version. It returns ErrVersionMismatch
 	// when the row exists with another version.
 	Update(ctx context.Context, id uuid.UUID, expectedVersions []int64, spec Spec) (Medication, error)
-	// TODO(slice-8): Delete(ctx, id, expectedVersion *int64) error
+	// Delete soft-deletes the active row. A nil expectedVersions deletes
+	// whatever version is current; otherwise it behaves like Update.
+	Delete(ctx context.Context, id uuid.UUID, expectedVersions []int64) error
 }
 
 // Service implements the medication use cases: it owns validation and ID
@@ -81,6 +83,26 @@ func (s *Service) Replace(ctx context.Context, id uuid.UUID, expectedVersions []
 		return Medication{}, fmt.Errorf("replace medication %s: %w", id, err)
 	}
 	return m, nil
+}
+
+// Delete is unconditional: used when the client sent no If-Match (or "*").
+func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	return s.delete(ctx, id, nil)
+}
+
+// DeleteIfVersion only deletes the version the client last saw.
+func (s *Service) DeleteIfVersion(ctx context.Context, id uuid.UUID, expectedVersions []int64) error {
+	if len(expectedVersions) == 0 {
+		return ErrVersionMismatch
+	}
+	return s.delete(ctx, id, expectedVersions)
+}
+
+func (s *Service) delete(ctx context.Context, id uuid.UUID, expectedVersions []int64) error {
+	if err := s.repo.Delete(ctx, id, expectedVersions); err != nil {
+		return fmt.Errorf("delete medication %s: %w", id, err)
+	}
+	return nil
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Medication, error) {

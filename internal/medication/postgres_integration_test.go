@@ -585,3 +585,102 @@ func TestPostgres_UpdateConcurrentWritersExactlyOneWins(t *testing.T) {
 		t.Errorf("final version = %d, want 2", got.Version)
 	}
 }
+
+func softDeletedAt(t *testing.T, id uuid.UUID) (deletedAt *time.Time, version int64) {
+	t.Helper()
+	err := testPool.QueryRow(t.Context(),
+		`SELECT deleted_at, version FROM medications WHERE id = $1`, id).Scan(&deletedAt, &version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return deletedAt, version
+}
+
+func TestPostgres_Delete(t *testing.T) {
+	t.Run("keeps the row, stamps deleted_at and bumps version", func(t *testing.T) {
+		repo := freshRepo(t)
+		m := createNamed(t, repo, "X", "tablet")
+		if err := repo.Delete(t.Context(), m.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		deletedAt, version := softDeletedAt(t, m.ID)
+		if deletedAt == nil || version != 2 {
+			t.Errorf("deleted_at = %v, version = %d", deletedAt, version)
+		}
+		if _, err := repo.Get(t.Context(), m.ID); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Get after delete: %v", err)
+		}
+	})
+
+	t.Run("conditional", func(t *testing.T) {
+		repo := freshRepo(t)
+		m := createNamed(t, repo, "X", "tablet")
+		if err := repo.Delete(t.Context(), m.ID, []int64{5}); !errors.Is(err, ErrVersionMismatch) {
+			t.Fatalf("stale: %v", err)
+		}
+		if deletedAt, _ := softDeletedAt(t, m.ID); deletedAt != nil {
+			t.Fatal("stale conditional delete must not delete")
+		}
+		if err := repo.Delete(t.Context(), m.ID, []int64{1}); err != nil {
+			t.Fatalf("current: %v", err)
+		}
+	})
+
+	t.Run("missing and already deleted are not found", func(t *testing.T) {
+		repo := freshRepo(t)
+		m := createNamed(t, repo, "X", "tablet")
+		_ = repo.Delete(t.Context(), m.ID, nil)
+		if err := repo.Delete(t.Context(), m.ID, nil); !errors.Is(err, ErrNotFound) {
+			t.Errorf("already deleted: %v", err)
+		}
+		if err := repo.Delete(t.Context(), uuid.New(), nil); !errors.Is(err, ErrNotFound) {
+			t.Errorf("missing: %v", err)
+		}
+	})
+
+	t.Run("identity and NDC are released for re-creation", func(t *testing.T) {
+		repo := freshRepo(t)
+		in := Input{Name: "Aspirin", Form: "tablet", Dosage: DosageInput{Value: "100", Unit: "mg"}, NDC: "12345-6789-01"}
+		first, err := repo.Create(t.Context(), newMed(t, in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Delete(t.Context(), first.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.Create(t.Context(), newMed(t, in)); err != nil {
+			t.Fatalf("re-create: %v", err)
+		}
+		var total int
+		_ = testPool.QueryRow(t.Context(), "SELECT count(*) FROM medications").Scan(&total)
+		if total != 2 {
+			t.Errorf("rows = %d, want 2 (deleted row kept for audit)", total)
+		}
+	})
+}
+
+// A delete racing an update holding the same ETag: exactly one succeeds.
+func TestPostgres_DeleteRacingUpdate(t *testing.T) {
+	for range 20 {
+		repo := freshRepo(t)
+		m := createNamed(t, repo, "Contended", "tablet")
+		spec := mustSpec(t, Input{Name: "Renamed", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}})
+
+		var updateErr, deleteErr error
+		var wg sync.WaitGroup
+		wg.Go(func() { _, updateErr = repo.Update(t.Context(), m.ID, []int64{1}, spec) })
+		wg.Go(func() { deleteErr = repo.Delete(t.Context(), m.ID, []int64{1}) })
+		wg.Wait()
+
+		if (updateErr == nil) == (deleteErr == nil) {
+			t.Fatalf("exactly one must win: update=%v delete=%v", updateErr, deleteErr)
+		}
+		loser := updateErr
+		if loser == nil {
+			loser = deleteErr
+		}
+		if !errors.Is(loser, ErrVersionMismatch) && !errors.Is(loser, ErrNotFound) {
+			t.Fatalf("loser error: %v", loser)
+		}
+	}
+}
