@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eduardo-sirangelo/medication-api/internal/medication"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/db"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/health"
@@ -85,7 +86,9 @@ func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Liveness)
 	mux.Handle("GET /readyz", readiness)
-	// TODO(slice-5): medication routes.
+	medication.NewHandler(
+		medication.NewService(medication.NewPostgresRepository(pool)), log,
+	).Register(mux)
 
 	// Outermost first. RequestID runs before everything so logs and problem
 	// bodies carry the ID; AccessLog wraps Recover so recovered panics are

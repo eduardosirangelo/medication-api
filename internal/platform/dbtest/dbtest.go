@@ -7,12 +7,16 @@ package dbtest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
+	"github.com/eduardo-sirangelo/medication-api/internal/platform/db"
+	"github.com/eduardo-sirangelo/medication-api/migrations"
 )
 
 // Image is the PostgreSQL version used in tests; keep in sync with compose.yaml.
@@ -57,4 +61,20 @@ func (p *Postgres) Config() config.DB {
 		ConnectTimeout:   5 * time.Second,
 		StatementTimeout: 5 * time.Second,
 	}
+}
+
+// MigratedPool applies the real migrations and returns a serving pool, the
+// same way the application starts. The caller closes the pool.
+func (p *Postgres) MigratedPool(ctx context.Context) (*pgxpool.Pool, error) {
+	quiet := slog.New(slog.DiscardHandler)
+	mpool, err := db.OpenForMigrations(ctx, p.Config(), quiet)
+	if err != nil {
+		return nil, err
+	}
+	err = db.Migrate(ctx, mpool, migrations.FS, quiet)
+	mpool.Close()
+	if err != nil {
+		return nil, err
+	}
+	return db.Open(ctx, p.Config(), quiet)
 }

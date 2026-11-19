@@ -9,7 +9,7 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
 )
 
-func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) Problem {
+func readProblem(t *testing.T, rec *httptest.ResponseRecorder) Problem {
 	t.Helper()
 	if ct := rec.Header().Get("Content-Type"); ct != ProblemContentType {
 		t.Fatalf("Content-Type = %q, want %q", ct, ProblemContentType)
@@ -35,7 +35,7 @@ func TestWriteProblem_FillsInstanceAndRequestID(t *testing.T) {
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("missing nosniff")
 	}
-	got := decodeProblem(t, rec)
+	got := readProblem(t, rec)
 	if got.Type != "about:blank" || got.Title != "Unprocessable Entity" || got.Status != 422 ||
 		got.Detail != "Validation failed." || got.Instance != "/v1/x" || got.RequestID != "rid-1" {
 		t.Errorf("unexpected problem: %+v", got)
@@ -69,7 +69,7 @@ func TestWriteJSON_UnencodableValueBecomes500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
-	if p := decodeProblem(t, rec); p.Status != 500 {
+	if p := readProblem(t, rec); p.Status != 500 {
 		t.Errorf("problem = %+v", p)
 	}
 }
@@ -95,7 +95,7 @@ func TestWithProblemFallback(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d", rec.Code)
 		}
-		if p := decodeProblem(t, rec); p.Status != 404 || p.Instance != "/nope" {
+		if p := readProblem(t, rec); p.Status != 404 || p.Instance != "/nope" {
 			t.Errorf("problem = %+v", p)
 		}
 	})
@@ -109,7 +109,7 @@ func TestWithProblemFallback(t *testing.T) {
 		if allow := rec.Header().Get("Allow"); allow != "GET, HEAD" {
 			t.Errorf("Allow = %q, want %q", allow, "GET, HEAD")
 		}
-		if p := decodeProblem(t, rec); p.Status != 405 {
+		if p := readProblem(t, rec); p.Status != 405 {
 			t.Errorf("problem = %+v", p)
 		}
 	})

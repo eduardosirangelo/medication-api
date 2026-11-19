@@ -1,0 +1,106 @@
+package medication
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/google/uuid"
+)
+
+var fixedID = uuid.MustParse("019a9c3e-7a10-7000-8000-000000000001")
+
+func newTestService(repo *fakeRepo) *Service {
+	s := NewService(repo)
+	s.newID = func() (uuid.UUID, error) { return fixedID, nil }
+	return s
+}
+
+func TestService_Create(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(repo)
+
+	m, err := svc.Create(t.Context(), Input{
+		Name: "  Paracetamol ", Form: "Tablet",
+		Dosage: DosageInput{Value: "500.0", Unit: "MG"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if m.ID != fixedID || m.Name != "Paracetamol" || m.Form != FormTablet ||
+		m.Dosage.String() != "500 mg" || m.Version != 1 || m.CreatedAt.IsZero() {
+		t.Errorf("unexpected medication: %+v", m)
+	}
+	if _, ok := repo.rows[fixedID]; !ok {
+		t.Error("medication not stored")
+	}
+}
+
+func TestService_Create_ValidationErrorNeverReachesRepo(t *testing.T) {
+	repo := newFakeRepo()
+	_, err := newTestService(repo).Create(t.Context(), Input{})
+
+	var verr *ValidationError
+	if !errors.As(err, &verr) || len(verr.Fields) == 0 {
+		t.Fatalf("want *ValidationError, got %v", err)
+	}
+	if repo.calls != 0 {
+		t.Errorf("repository called %d times for invalid input", repo.calls)
+	}
+}
+
+func TestService_Create_Duplicate(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo) // real UUIDv7 generator
+	in := Input{Name: "Ibuprofen", Form: "capsule", Dosage: DosageInput{Value: "200", Unit: "mg"}}
+
+	if _, err := svc.Create(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	in.Name = "IBUPROFEN"
+	if _, err := svc.Create(t.Context(), in); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("want ErrDuplicate, got %v", err)
+	}
+}
+
+func TestService_Create_IDGenerationFailure(t *testing.T) {
+	svc := NewService(newFakeRepo())
+	boom := errors.New("entropy exhausted")
+	svc.newID = func() (uuid.UUID, error) { return uuid.Nil, boom }
+
+	_, err := svc.Create(t.Context(), Input{Name: "X", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}})
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped boom, got %v", err)
+	}
+}
+
+func TestService_Get(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(repo)
+	created, err := svc.Create(t.Context(), Input{Name: "X", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.Get(t.Context(), created.ID)
+	if err != nil || got.ID != created.ID {
+		t.Fatalf("Get = %+v, %v", got, err)
+	}
+	if _, err := svc.Get(t.Context(), uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestService_RepositoryErrorsAreWrapped(t *testing.T) {
+	repo := newFakeRepo()
+	repo.err = errors.New("connection reset")
+	svc := newTestService(repo)
+
+	_, err := svc.Create(t.Context(), Input{Name: "X", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}})
+	if !errors.Is(err, repo.err) {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = svc.Get(t.Context(), fixedID)
+	if !errors.Is(err, repo.err) {
+		t.Fatalf("get: %v", err)
+	}
+}
