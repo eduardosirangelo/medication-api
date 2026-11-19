@@ -22,7 +22,7 @@ type Config struct {
 	LogLevel slog.Level
 }
 
-// HTTP holds listener, server timeout and shutdown settings.
+// HTTP holds listener, timeout and shutdown settings.
 type HTTP struct {
 	Addr              string
 	ReadHeaderTimeout time.Duration
@@ -59,7 +59,6 @@ func (Secret) LogValue() slog.Value           { return slog.StringValue("[REDACT
 func (s Secret) Reveal() string               { return string(s) }
 func (s Secret) MarshalText() ([]byte, error) { return []byte("[REDACTED]"), nil }
 
-// Load reads configuration using lookup, applying defaults for unset variables.
 func Load(lookup LookupFunc) (Config, error) {
 	p := parser{lookup: lookup}
 
@@ -97,7 +96,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	return cfg, nil
 }
 
-// parser accumulates errors so all problems are reported in one go.
+// parser accumulates errors so a bad deployment reports every problem at once.
 type parser struct {
 	lookup LookupFunc
 	errs   []error

@@ -63,6 +63,19 @@ func TestNewSpec_Valid(t *testing.T) {
 			Spec{Name: strings.Repeat("é", MaxNameLength), Form: FormTablet, Dosage: Dosage{Value: 500_0000, Unit: UnitMg}},
 		},
 		{
+			"identifiers normalized",
+			func(in *Input) { in.NDC, in.RxCUI, in.Route = "0071-0155-23", " 198440 ", "Oral" },
+			Spec{
+				Name: "Paracetamol", Form: FormTablet, Dosage: Dosage{Value: 500_0000, Unit: UnitMg},
+				NDC: "00071015523", RxCUI: "198440", Route: RouteOral,
+			},
+		},
+		{
+			"blank identifiers are absent",
+			func(in *Input) { in.NDC, in.RxCUI, in.Route = " ", "", "\t" },
+			Spec{Name: "Paracetamol", Form: FormTablet, Dosage: Dosage{Value: 500_0000, Unit: UnitMg}},
+		},
+		{
 			"percentage without per",
 			func(in *Input) { in.Dosage = DosageInput{Value: "0.5", Unit: "%"} },
 			Spec{Name: "Paracetamol", Form: FormTablet, Dosage: Dosage{Value: 5000, Unit: UnitPercent}},
@@ -132,6 +145,12 @@ func TestNewSpec_Invalid(t *testing.T) {
 			[]FieldError{{"dosage.per_unit", "cannot be combined with %: a percentage is already a concentration"}}},
 		{"bad per_unit skips cross-field rules", func(in *Input) { in.Dosage.PerValue, in.Dosage.PerUnit = "5", "cup" },
 			[]FieldError{{"dosage.per_unit", "must be one of: mg, mcg, g, mL, IU, %"}}},
+		{"bad ndc", func(in *Input) { in.NDC = "1234567890" },
+			[]FieldError{{"ndc", ErrNDCFormat.Error()}}},
+		{"bad rxcui", func(in *Input) { in.RxCUI = "RX161" },
+			[]FieldError{{"rxcui", ErrRxCUIFormat.Error()}}},
+		{"bad route", func(in *Input) { in.Route = "by mouth" },
+			[]FieldError{{"route", "must be one of: " + routeList}}},
 		{
 			"every error reported at once",
 			func(in *Input) { *in = Input{Dosage: DosageInput{Value: "abc", Unit: "kg", PerValue: "5"}} },

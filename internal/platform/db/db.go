@@ -20,11 +20,9 @@ import (
 // an unbounded wait during a deploy can stall live traffic.
 const migrationLockTimeout = 10 * time.Second
 
-// Open creates the serving connection pool and verifies connectivity, so a
-// wrong DSN or unreachable database fails the process at startup.
-//
-// Every connection gets a statement_timeout: a runaway query is cancelled by
-// the server instead of holding a connection (and the request) forever.
+// The startup ping makes a wrong DSN or unreachable database fail the process
+// immediately. statement_timeout makes the server, not just the client,
+// abandon runaway queries.
 func Open(ctx context.Context, cfg config.DB, log *slog.Logger) (*pgxpool.Pool, error) {
 	params := map[string]string{
 		"statement_timeout":                   ms(cfg.StatementTimeout),
@@ -33,8 +31,8 @@ func Open(ctx context.Context, cfg config.DB, log *slog.Logger) (*pgxpool.Pool, 
 	return open(ctx, cfg, params, log)
 }
 
-// OpenForMigrations creates a small, short-lived pool for running migrations:
-// no statement_timeout (index builds can be slow) but a lock_timeout.
+// Migrations need no statement_timeout (index builds can be slow) but do need
+// a lock_timeout, so they get their own small, short-lived pool.
 func OpenForMigrations(ctx context.Context, cfg config.DB, log *slog.Logger) (*pgxpool.Pool, error) {
 	cfg.MaxConns = 3 // goose holds one for the advisory lock, uses another to migrate
 	cfg.MinConns = 0

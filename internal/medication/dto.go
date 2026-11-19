@@ -5,16 +5,19 @@ import (
 	"time"
 )
 
-// Wire types. The domain has no JSON tags: these structs are the public
-// contract (documented in openapi.yaml) and can evolve independently.
+// Wire types are the public contract (openapi.yaml). Keeping them apart from
+// the domain lets either evolve without breaking the other.
 
 type medicationRequest struct {
 	Name   string        `json:"name"`
 	Form   string        `json:"form"`
 	Dosage dosageRequest `json:"dosage"`
+	NDC    string        `json:"ndc"`
+	RxCUI  string        `json:"rxcui"`
+	Route  string        `json:"route"`
 }
 
-// Amounts are json.Number so the decimal text reaches the domain untouched.
+// json.Number keeps the decimal text untouched on its way to the domain.
 type dosageRequest struct {
 	Value    json.Number `json:"value"`
 	Unit     string      `json:"unit"`
@@ -32,6 +35,9 @@ func (r medicationRequest) toInput() Input {
 			PerValue: r.Dosage.PerValue.String(),
 			PerUnit:  r.Dosage.PerUnit,
 		},
+		NDC:   r.NDC,
+		RxCUI: r.RxCUI,
+		Route: r.Route,
 	}
 }
 
@@ -40,12 +46,14 @@ type medicationResponse struct {
 	Name      string         `json:"name"`
 	Dosage    dosageResponse `json:"dosage"`
 	Form      string         `json:"form"`
+	NDC       string         `json:"ndc,omitempty"`
+	RxCUI     string         `json:"rxcui,omitempty"`
+	Route     string         `json:"route,omitempty"`
 	Version   int64          `json:"version"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
-// Numbers are emitted as JSON numbers in canonical decimal form (500, 2.5).
 type dosageResponse struct {
 	Value    json.Number `json:"value"`
 	Unit     string      `json:"unit"`
@@ -54,21 +62,25 @@ type dosageResponse struct {
 }
 
 func toResponse(m Medication) medicationResponse {
-	d := dosageResponse{
-		Value: json.Number(m.Dosage.Value.String()),
-		Unit:  string(m.Dosage.Unit),
-	}
-	if m.Dosage.Per != nil {
-		d.PerValue = json.Number(m.Dosage.Per.Value.String())
-		d.PerUnit = string(m.Dosage.Per.Unit)
-	}
 	return medicationResponse{
 		ID:        m.ID.String(),
 		Name:      m.Name,
-		Dosage:    d,
+		Dosage:    toDosageResponse(m.Dosage),
 		Form:      string(m.Form),
+		NDC:       m.NDC.Hyphenated(),
+		RxCUI:     string(m.RxCUI),
+		Route:     string(m.Route),
 		Version:   m.Version,
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}
+}
+
+func toDosageResponse(d Dosage) dosageResponse {
+	resp := dosageResponse{Value: json.Number(d.Value.String()), Unit: string(d.Unit)}
+	if d.Per != nil {
+		resp.PerValue = json.Number(d.Per.Value.String())
+		resp.PerUnit = string(d.Per.Unit)
+	}
+	return resp
 }

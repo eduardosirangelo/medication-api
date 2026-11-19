@@ -225,6 +225,106 @@ func TestPostgres_CheckConstraintsRejectInvalidRows(t *testing.T) {
 	}
 }
 
+func TestPostgres_IdentifiersRoundTrip(t *testing.T) {
+	repo := freshRepo(t)
+	m := newMed(t, Input{
+		Name: "Amoxicillin", Form: "capsule", Dosage: DosageInput{Value: "500", Unit: "mg"},
+		NDC: "0093-3109-01", RxCUI: "308191", Route: "oral",
+	})
+	if _, err := repo.Create(t.Context(), m); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Get(t.Context(), m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NDC != "00093310901" || got.RxCUI != "308191" || got.Route != RouteOral {
+		t.Errorf("identifiers = %q %q %q", got.NDC, got.RxCUI, got.Route)
+	}
+
+	var stored string
+	_ = testPool.QueryRow(t.Context(), "SELECT ndc FROM medications WHERE id = $1", m.ID).Scan(&stored)
+	if stored != "00093310901" {
+		t.Errorf("stored ndc = %q, want unhyphenated 11 digits", stored)
+	}
+}
+
+func TestPostgres_NDCUniqueAmongActiveRows(t *testing.T) {
+	withNDC := func(name, ndc string) Medication {
+		return newMed(t, Input{Name: name, Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}, NDC: ndc})
+	}
+
+	t.Run("same NDC, different identity → ErrDuplicateNDC", func(t *testing.T) {
+		repo := freshRepo(t)
+		if _, err := repo.Create(t.Context(), withNDC("A", "12345-6789-01")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := repo.Create(t.Context(), withNDC("B", "12345678901"))
+		if !errors.Is(err, ErrDuplicateNDC) {
+			t.Fatalf("want ErrDuplicateNDC, got %v", err)
+		}
+	})
+
+	t.Run("many rows without NDC are fine", func(t *testing.T) {
+		repo := freshRepo(t)
+		for _, name := range []string{"A", "B", "C"} {
+			if _, err := repo.Create(t.Context(), withNDC(name, "")); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+	})
+
+	t.Run("soft-deleted NDC can be reused", func(t *testing.T) {
+		repo := freshRepo(t)
+		first, err := repo.Create(t.Context(), withNDC("A", "12345-6789-01"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := testPool.Exec(t.Context(), "UPDATE medications SET deleted_at = now() WHERE id = $1", first.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.Create(t.Context(), withNDC("B", "12345-6789-01")); err != nil {
+			t.Fatalf("reuse after soft delete: %v", err)
+		}
+	})
+}
+
+func TestPostgres_NDCIndexIsValid(t *testing.T) {
+	// CONCURRENTLY builds can leave an INVALID index that enforces nothing.
+	var valid bool
+	err := testPool.QueryRow(t.Context(), `
+		SELECT i.indisvalid FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		WHERE c.relname = 'medications_active_ndc_key'`).Scan(&valid)
+	if err != nil || !valid {
+		t.Fatalf("index valid = %v, err = %v", valid, err)
+	}
+}
+
+func TestPostgres_IdentifierCheckConstraints(t *testing.T) {
+	freshRepo(t)
+	insert := `INSERT INTO medications (id, name, dosage_value, dosage_unit, form, ndc, rxcui, route)
+	           VALUES (gen_random_uuid(), 'X', 1, 'mg', 'tablet', $1, $2, $3)`
+	tests := []struct {
+		name string
+		args []any
+	}{
+		{"hyphenated ndc", []any{"12345-6789-01", nil, nil}},
+		{"10-digit ndc", []any{"1234567890", nil, nil}},
+		{"non-numeric rxcui", []any{nil, "RX1", nil}},
+		{"unknown route", []any{nil, nil, "by mouth"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := testPool.Exec(t.Context(), insert, tt.args...)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+				t.Fatalf("want check_violation, got %v", err)
+			}
+		})
+	}
+}
+
 // End to end through the real handler, service and repository.
 func TestHTTP_CreateThenGet_RealDatabase(t *testing.T) {
 	repo := freshRepo(t)

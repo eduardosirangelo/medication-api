@@ -5,29 +5,25 @@ import (
 	"strings"
 )
 
-// Domain errors. The service returns them (possibly wrapped); the HTTP layer
-// maps them to status codes with errors.Is/As:
-//
-//	ErrNotFound         → 404
-//	ErrDuplicate        → 409
-//	ErrVersionMismatch  → 412
-//	*ValidationError    → 422
+// The HTTP layer maps these with errors.Is, so they must survive wrapping:
+// ErrNotFound → 404, ErrDuplicate and ErrDuplicateNDC → 409,
+// ErrVersionMismatch → 412, *ValidationError → 422.
 var (
 	ErrNotFound        = errors.New("medication not found")
 	ErrDuplicate       = errors.New("an active medication with the same name, dosage and form already exists")
+	ErrDuplicateNDC    = errors.New("an active medication with the same NDC already exists")
 	ErrVersionMismatch = errors.New("medication was modified by another request")
 )
 
-// FieldError describes one invalid input field. Field is the dotted path of
-// the API field (e.g. "dosage.per_unit"), so clients can attach the message to
-// the right form control.
+// FieldError names an invalid input field by its API path (e.g.
+// "dosage.per_unit") so clients can attach the message to the right control.
 type FieldError struct {
 	Field   string
 	Message string
 }
 
-// ValidationError carries every problem found in an input, not just the first,
-// so clients can fix them all in one round trip.
+// ValidationError carries every problem found in an input, not just the
+// first, so clients can fix them all in one round trip.
 type ValidationError struct {
 	Fields []FieldError
 }

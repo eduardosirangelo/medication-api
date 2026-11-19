@@ -10,29 +10,21 @@ import (
 	"strings"
 )
 
-// DecodeJSON strictly decodes a single JSON object from the request body into
-// dst. On failure it returns a Problem ready to be written:
-//
-//	415  Content-Type is not application/json (charset, if given, must be UTF-8)
-//	413  body exceeds the MaxBodyBytes middleware limit
-//	400  empty body, malformed JSON, wrong JSON type for a field, unknown
-//	     field, or anything after the first JSON value
-//
-// 400 means "this is not the shape the endpoint accepts"; semantic problems
-// with well-formed input are the handler's to report (422).
+// 400 means "not the shape this endpoint accepts"; well-formed input with
+// invalid content is the handler's to report as 422.
 func DecodeJSON(r *http.Request, dst any) *Problem {
 	if p := requireJSONContentType(r); p != nil {
 		return p
 	}
 
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields() // typos like "dosge" fail loudly instead of being ignored
-	dec.UseNumber()             // never round-trip numbers through float64
+	dec.DisallowUnknownFields() // a typo like "dosge" must fail, not be ignored
+	dec.UseNumber()             // numbers must never round-trip through float64
 
 	if err := dec.Decode(dst); err != nil {
 		return decodeProblem(err)
 	}
-	// Reject trailing data such as `{...}{...}` or `{...} garbage`.
+	// Without this, `{...}{...}` or `{...} garbage` would be half-read silently.
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if p := maxBytesProblem(err); p != nil {
 			return p
@@ -97,8 +89,7 @@ func maxBytesProblem(err error) *Problem {
 	return &p
 }
 
-// jsonKind reduces UnmarshalTypeError.Value ("number -5", "string") to the
-// JSON kind, so client-supplied values are not echoed back.
+// Only the JSON kind is reported, so client-supplied values are never echoed.
 func jsonKind(v string) string {
 	kind, _, _ := strings.Cut(v, " ")
 	return kind

@@ -169,6 +169,51 @@ func TestCreate_Duplicate409(t *testing.T) {
 	}
 }
 
+func TestCreate_WithIdentifiers(t *testing.T) {
+	api := newTestAPI(t)
+	rec := api.do(t, http.MethodPost, "/v1/medications",
+		`{"name":"Amoxicillin","form":"capsule","dosage":{"value":500,"unit":"mg"},
+		  "ndc":"0093-3109-01","rxcui":"308191","route":"Oral"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"ndc":"00093-3109-01","rxcui":"308191","route":"oral"`) {
+		t.Errorf("identifiers not normalized: %s", rec.Body.String())
+	}
+}
+
+func TestCreate_DuplicateNDCHasItsOwnDetail(t *testing.T) {
+	api := newTestAPI(t)
+	first := `{"name":"Amoxicillin","form":"capsule","dosage":{"value":500,"unit":"mg"},"ndc":"0093-3109-01"}`
+	// Different identity (strength), same package code written in another layout.
+	second := `{"name":"Amoxicillin","form":"capsule","dosage":{"value":250,"unit":"mg"},"ndc":"00093310901"}`
+
+	if rec := api.do(t, http.MethodPost, "/v1/medications", first); rec.Code != http.StatusCreated {
+		t.Fatalf("first: %d", rec.Code)
+	}
+	rec := api.do(t, http.MethodPost, "/v1/medications", second)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if p := decodeBody[httpx.Problem](t, rec); !strings.Contains(p.Detail, "NDC") {
+		t.Errorf("detail should name the NDC conflict: %q", p.Detail)
+	}
+}
+
+func TestCreate_IdentifierValidationIs422(t *testing.T) {
+	api := newTestAPI(t)
+	rec := api.do(t, http.MethodPost, "/v1/medications",
+		`{"name":"X","form":"tablet","dosage":{"value":1,"unit":"mg"},"ndc":"1234567890","rxcui":"abc","route":"by mouth"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	p := decodeBody[httpx.Problem](t, rec)
+	if len(p.Errors) != 3 {
+		t.Errorf("want 3 field errors (ndc, rxcui, route), got %+v", p.Errors)
+	}
+}
+
 func TestCreate_InternalErrorDoesNotLeak(t *testing.T) {
 	api := newTestAPI(t)
 	api.repo.err = errors.New(`pq: relation "medications" password=hunter2`)

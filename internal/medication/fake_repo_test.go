@@ -44,6 +44,9 @@ func (f *fakeRepo) Create(_ context.Context, m Medication) (Medication, error) {
 		if identityKey(existing.Spec) == identityKey(m.Spec) {
 			return Medication{}, ErrDuplicate
 		}
+		if m.NDC != "" && existing.NDC == m.NDC {
+			return Medication{}, ErrDuplicateNDC
+		}
 	}
 	m.Version, m.CreatedAt, m.UpdatedAt = 1, f.now, f.now
 	f.rows[m.ID] = m

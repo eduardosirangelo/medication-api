@@ -9,18 +9,16 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
 )
 
-// ServiceName is attached to every log line so aggregated logs can be filtered.
+// Attached to every line so aggregated logs can be filtered by service.
 const ServiceName = "medication-api"
 
-// New returns a JSON slog logger writing to w at the given minimum level.
-// Calls made with a context (InfoContext, ErrorContext, ...) automatically get
-// the request_id attribute. Request/response bodies must never be logged.
+// Request and response bodies must never be logged through it: they may
+// carry user input. Context-aware calls (InfoContext...) get request_id.
 func New(w io.Writer, level slog.Leveler) *slog.Logger {
 	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
 	return slog.New(contextHandler{h}).With(slog.String("service", ServiceName))
 }
 
-// contextHandler enriches records with values carried in the context.
 type contextHandler struct{ slog.Handler }
 
 func (h contextHandler) Handle(ctx context.Context, r slog.Record) error {

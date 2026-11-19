@@ -5,11 +5,10 @@ import (
 	"net/http"
 )
 
-// Middleware wraps a handler with extra behaviour.
 type Middleware func(http.Handler) http.Handler
 
-// Chain applies mws to h so that the first middleware is the outermost:
-// Chain(h, A, B) handles a request as A → B → h.
+// The first middleware is the outermost, so the list reads in execution
+// order: Chain(h, A, B) runs A → B → h.
 func Chain(h http.Handler, mws ...Middleware) http.Handler {
 	for i := len(mws) - 1; i >= 0; i-- {
 		h = mws[i](h)
@@ -17,8 +16,8 @@ func Chain(h http.Handler, mws ...Middleware) http.Handler {
 	return h
 }
 
-// statusWriter records the status code and bytes written. Middlewares share a
-// single instance per request (see wrap) so they agree on what was sent.
+// One instance is shared per request (see wrap) so every middleware agrees
+// on the status and size actually sent.
 type statusWriter struct {
 	http.ResponseWriter
 	status      int
@@ -50,8 +49,7 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Status returns the status sent, defaulting to 200 when the handler wrote
-// nothing (net/http sends 200 in that case).
+// net/http sends 200 when a handler writes nothing.
 func (w *statusWriter) Status() int {
 	if w.status == 0 {
 		return http.StatusOK

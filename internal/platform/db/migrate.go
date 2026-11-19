@@ -12,8 +12,6 @@ import (
 	"github.com/pressly/goose/v3/lock"
 )
 
-// Migrate applies all pending migrations from fsys.
-//
 // A PostgreSQL session-level advisory lock serialises concurrent runs, so it
 // is safe if several replicas (or a job and a replica) start at once: the
 // first applies the migrations, the rest wait and then find nothing to do.

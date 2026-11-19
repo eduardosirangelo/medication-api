@@ -19,17 +19,15 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/migrations"
 )
 
-// Image is the PostgreSQL version used in tests; keep in sync with compose.yaml.
+// Keep in sync with compose.yaml so tests run against what developers use.
 const Image = "postgres:18-alpine"
 
-// Postgres is a running test database.
 type Postgres struct {
 	DSN       string
 	container *tcpostgres.PostgresContainer
 }
 
-// Start launches a container and returns once it accepts connections.
-// Call Terminate when done (typically from TestMain).
+// One container per test package (from TestMain): starting one per test is slow.
 func Start(ctx context.Context) (*Postgres, error) {
 	c, err := tcpostgres.Run(ctx, Image,
 		tcpostgres.WithDatabase("medication_test"),
@@ -48,10 +46,8 @@ func Start(ctx context.Context) (*Postgres, error) {
 	return &Postgres{DSN: dsn, container: c}, nil
 }
 
-// Terminate stops and removes the container.
 func (p *Postgres) Terminate() error { return testcontainers.TerminateContainer(p.container) }
 
-// Config returns a DB config pointing at the container with test-friendly values.
 func (p *Postgres) Config() config.DB {
 	return config.DB{
 		URL:              config.Secret(p.DSN),
@@ -63,8 +59,7 @@ func (p *Postgres) Config() config.DB {
 	}
 }
 
-// MigratedPool applies the real migrations and returns a serving pool, the
-// same way the application starts. The caller closes the pool.
+// Uses the real migrations and pool setup so tests exercise what production runs.
 func (p *Postgres) MigratedPool(ctx context.Context) (*pgxpool.Pool, error) {
 	quiet := slog.New(slog.DiscardHandler)
 	mpool, err := db.OpenForMigrations(ctx, p.Config(), quiet)

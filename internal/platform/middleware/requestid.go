@@ -6,9 +6,8 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
 )
 
-// RequestID reuses a well-formed inbound X-Request-ID (so IDs propagate from
-// gateways and callers) or generates one, stores it in the request context and
-// echoes it in the response header.
+// A well-formed inbound ID is reused so one ID follows the request across
+// gateways and services; anything else is replaced.
 func RequestID() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

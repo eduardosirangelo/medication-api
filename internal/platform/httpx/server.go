@@ -1,4 +1,5 @@
-// Package httpx contains HTTP server plumbing shared by all handlers.
+// Package httpx contains HTTP plumbing shared by all handlers: server
+// lifecycle, problem+json errors, strict JSON decoding and ETags.
 package httpx
 
 import (
@@ -13,8 +14,10 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
 )
 
-// NewServer builds an http.Server with explicit timeouts. Go's zero-value
-// server has none, which leaves it open to slowloris-style resource exhaustion.
+const maxHeaderBytes = 1 << 20
+
+// Go's zero-value server has no timeouts, which leaves it open to
+// slowloris-style connection exhaustion.
 func NewServer(cfg config.HTTP, h http.Handler, log *slog.Logger) *http.Server {
 	return &http.Server{
 		Addr:              cfg.Addr,
@@ -23,62 +26,65 @@ func NewServer(cfg config.HTTP, h http.Handler, log *slog.Logger) *http.Server {
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    1 << 20, // 1 MiB
+		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 }
 
-// Shutdown configures how Serve stops.
+// Shutdown configures how Serve stops: first OnDrain and a DrainDelay while
+// still serving (so load balancers notice the failing readiness probe), then
+// up to Timeout for in-flight requests before connections are forced closed.
 type Shutdown struct {
-	// Timeout bounds how long in-flight requests get to finish.
-	Timeout time.Duration
-	// DrainDelay is waited after OnDrain and before refusing connections, while
-	// the server keeps serving normally. It gives load balancers time to notice
-	// the failing readiness probe and stop routing new requests here.
+	Timeout    time.Duration
 	DrainDelay time.Duration
-	// OnDrain is called once shutdown begins (typically Readiness.SetDraining).
-	OnDrain func()
+	OnDrain    func()
 }
 
-// Serve runs srv on ln until ctx is cancelled, then shuts down gracefully:
-//
-//  1. OnDrain (readiness starts failing) and wait DrainDelay, still serving;
-//  2. stop accepting connections and wait up to Timeout for in-flight requests;
-//  3. if they don't finish in time, force-close the remaining connections.
-//
-// It returns nil after a clean shutdown, or the error that stopped the server.
+// Serve blocks until ctx is cancelled and the server has shut down. It
+// returns nil after a clean shutdown.
 func Serve(ctx context.Context, srv *http.Server, ln net.Listener, sd Shutdown, log *slog.Logger) error {
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 1) // buffered: the goroutine must never block if nobody reads
 	go func() { serveErr <- srv.Serve(ln) }()
 	log.Info("http server listening", slog.String("addr", ln.Addr().String()))
 
 	select {
 	case err := <-serveErr:
-		// Serve only returns before shutdown on a real failure.
 		return fmt.Errorf("http server: %w", err)
 	case <-ctx.Done():
 	}
 
+	if err := drain(sd, serveErr, log); err != nil {
+		return err
+	}
+	return shutdown(ctx, srv, sd.Timeout, serveErr, log)
+}
+
+func drain(sd Shutdown, serveErr <-chan error, log *slog.Logger) error {
 	if sd.OnDrain != nil {
 		sd.OnDrain()
 	}
-	if sd.DrainDelay > 0 {
-		log.Info("draining: readiness failing, still serving", slog.String("delay", sd.DrainDelay.String()))
-		select {
-		case <-time.After(sd.DrainDelay):
-		case err := <-serveErr:
-			return fmt.Errorf("http server: %w", err)
-		}
+	if sd.DrainDelay <= 0 {
+		return nil
 	}
+	log.Info("draining: readiness failing, still serving", slog.String("delay", sd.DrainDelay.String()))
+	select {
+	case <-time.After(sd.DrainDelay):
+		return nil
+	case err := <-serveErr:
+		return fmt.Errorf("http server: %w", err)
+	}
+}
 
-	log.Info("shutdown started", slog.String("timeout", sd.Timeout.String()))
+func shutdown(ctx context.Context, srv *http.Server, timeout time.Duration, serveErr <-chan error, log *slog.Logger) error {
+	log.Info("shutdown started", slog.String("timeout", timeout.String()))
 
-	// ctx is already cancelled; the shutdown deadline must be independent of it.
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sd.Timeout)
+	// ctx is already cancelled; deriving the deadline from it unchanged would
+	// make Shutdown give up immediately.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		_ = srv.Close() // deadline exceeded: drop remaining connections
+		_ = srv.Close()
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {

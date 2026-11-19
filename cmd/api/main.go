@@ -1,7 +1,5 @@
 // Command api runs the Medication API.
 //
-// Usage:
-//
 //	api [serve]   run the HTTP server (default)
 //	api migrate   apply pending database migrations and exit
 package main
@@ -31,10 +29,11 @@ import (
 
 const usage = "usage: api [serve|migrate]"
 
-// readinessTimeout must stay below the orchestrator's probe timeout
-// (Kubernetes defaults to 1s); a pooled ping normally takes well under 10ms.
+// Must stay below the orchestrator's probe timeout (Kubernetes defaults to
+// 1s); a pooled ping normally takes well under 10ms.
 const readinessTimeout = 800 * time.Millisecond
 
+// os.Exit skips deferred calls, so it lives here and nowhere else.
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.LookupEnv, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
@@ -42,21 +41,16 @@ func main() {
 	}
 }
 
-// run parses the subcommand, loads config and dispatches. Dependencies are
-// passed in so it stays testable; os.Exit lives only in main.
 func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io.Writer) error {
-	cmd := "serve"
-	if len(args) > 0 {
-		cmd = args[0]
-	}
-	if len(args) > 1 || (cmd != "serve" && cmd != "migrate") {
-		return errors.New(usage)
+	cmd, err := parseCommand(args)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// After the first signal, restore default handling so a second Ctrl+C or
-	// SIGTERM kills the process immediately instead of waiting for the drain.
+	// Restoring default signal handling after the first signal lets a second
+	// Ctrl+C or SIGTERM kill the process instead of waiting out the drain.
 	go func() { <-ctx.Done(); stop() }()
 
 	cfg, err := config.Load(lookup)
@@ -64,11 +58,26 @@ func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io
 		return err
 	}
 	log := logging.New(stdout, cfg.LogLevel)
-	slog.SetDefault(log) // for code paths without an injected logger
+	slog.SetDefault(log)
 
 	if cmd == "migrate" {
 		return migrate(ctx, cfg.DB, log)
 	}
+	return serve(ctx, cfg, log)
+}
+
+func parseCommand(args []string) (string, error) {
+	switch {
+	case len(args) == 0:
+		return "serve", nil
+	case len(args) == 1 && (args[0] == "serve" || args[0] == "migrate"):
+		return args[0], nil
+	default:
+		return "", errors.New(usage)
+	}
+}
+
+func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if cfg.DB.MigrateOnStart {
 		if err := migrate(ctx, cfg.DB, log); err != nil {
 			return err
@@ -79,43 +88,41 @@ func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io
 	if err != nil {
 		return err
 	}
-	defer pool.Close() // runs after Serve returns, i.e. after in-flight requests finish
+	defer pool.Close() // after Serve returns, i.e. once in-flight requests are done
 
 	readiness := health.NewReadiness(pool, readinessTimeout, log)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", health.Liveness)
-	mux.Handle("GET /readyz", readiness)
-	medication.NewHandler(
-		medication.NewService(medication.NewPostgresRepository(pool)), log,
-	).Register(mux)
-
-	// Outermost first. RequestID runs before everything so logs and problem
-	// bodies carry the ID; AccessLog wraps Recover so recovered panics are
-	// logged with their final 500 status.
-	handler := middleware.Chain(httpx.WithProblemFallback(mux),
-		middleware.RequestID(),
-		middleware.AccessLog(log),
-		middleware.Recover(log),
-		// TODO(slice-9): API key authentication.
-		middleware.MaxBodyBytes(cfg.HTTP.MaxBodyBytes),
-	)
+	handler := newHandler(cfg, log, readiness, medication.NewPostgresRepository(pool))
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.HTTP.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.HTTP.Addr, err)
 	}
-
-	srv := httpx.NewServer(cfg.HTTP, handler, log)
-	return httpx.Serve(ctx, srv, ln, httpx.Shutdown{
+	return httpx.Serve(ctx, httpx.NewServer(cfg.HTTP, handler, log), ln, httpx.Shutdown{
 		Timeout:    cfg.HTTP.ShutdownTimeout,
 		DrainDelay: cfg.HTTP.DrainDelay,
 		OnDrain:    readiness.SetDraining,
 	}, log)
 }
 
-// migrate applies pending migrations using a dedicated short-lived pool.
+func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness, repo medication.Repository) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", health.Liveness)
+	mux.Handle("GET /readyz", readiness)
+	medication.NewHandler(medication.NewService(repo), log).Register(mux)
+
+	// RequestID first so every log line and problem body carries the ID;
+	// AccessLog outside Recover so recovered panics are logged as 500s.
+	return middleware.Chain(httpx.WithProblemFallback(mux),
+		middleware.RequestID(),
+		middleware.AccessLog(log),
+		middleware.Recover(log),
+		// TODO(slice-9): API key authentication.
+		middleware.MaxBodyBytes(cfg.HTTP.MaxBodyBytes),
+	)
+}
+
+// Migrations get their own short-lived pool: see db.OpenForMigrations.
 func migrate(ctx context.Context, cfg config.DB, log *slog.Logger) error {
 	pool, err := db.OpenForMigrations(ctx, cfg, log)
 	if err != nil {

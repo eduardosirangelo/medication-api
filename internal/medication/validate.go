@@ -8,34 +8,20 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// MaxNameLength is the maximum name length in characters (runes), after
-// normalisation.
 const MaxNameLength = 200
-
-// Allowed-value lists for error messages, derived so they never drift.
-var (
-	formList = joinStrings(Forms)
-	unitList = joinStrings(Units)
-)
-
-func joinStrings[T ~string](vals []T) string {
-	s := make([]string, len(vals))
-	for i, v := range vals {
-		s[i] = string(v)
-	}
-	return strings.Join(s, ", ")
-}
 
 // Input is raw, untrusted client data for creating or replacing a medication.
 // Numbers arrive as strings (from json.Number) so no float conversion ever
-// touches them. An empty string means "not provided".
+// touches them; an empty string means "not provided".
 type Input struct {
 	Name   string
 	Form   string
 	Dosage DosageInput
+	NDC    string
+	RxCUI  string
+	Route  string
 }
 
-// DosageInput is the raw dosage; PerValue/PerUnit are both set or both empty.
 type DosageInput struct {
 	Value    string
 	Unit     string
@@ -43,21 +29,24 @@ type DosageInput struct {
 	PerUnit  string
 }
 
-// NewSpec validates and normalises in. It returns a *ValidationError listing
-// every invalid field, or a Spec that is guaranteed valid ("parse, don't
-// validate": code holding a Spec never re-checks it).
-//
-// Normalisation:
-//   - name: Unicode NFC, trimmed, internal whitespace collapsed to one space;
-//     letter case is preserved (uniqueness is case-insensitive in the DB);
-//   - form and units: case-insensitive, aliases accepted, stored canonical;
-//   - amounts: exact decimals, canonical form ("500.0" → 500).
+// Derived from the canonical lists so error messages never drift from them.
+var (
+	formList  = joinStrings(Forms)
+	unitList  = joinStrings(Units)
+	routeList = joinStrings(Routes)
+)
+
+// NewSpec validates and normalizes in, returning either a Spec that is
+// guaranteed valid or a *ValidationError listing every invalid field.
 func NewSpec(in Input) (Spec, error) {
 	var verr ValidationError
 	spec := Spec{
 		Name:   parseName(in.Name, &verr),
-		Form:   parseFormField(in.Form, &verr),
+		Form:   parseForm(in.Form, &verr),
 		Dosage: parseDosage(in.Dosage, &verr),
+		NDC:    parseOptionalNDC(in.NDC, &verr),
+		RxCUI:  parseOptionalRxCUI(in.RxCUI, &verr),
+		Route:  parseOptionalRoute(in.Route, &verr),
 	}
 	if len(verr.Fields) > 0 {
 		return Spec{}, &verr
@@ -65,13 +54,10 @@ func NewSpec(in Input) (Spec, error) {
 	return spec, nil
 }
 
-// NormalizeName applies the same normalisation as NewSpec, so search terms
-// can be compared against stored names on equal footing.
+// NormalizeName is exported so search terms get the same treatment as stored
+// names. NFC makes "é" typed as e + combining accent byte-identical to the
+// precomposed "é", so visually equal names hit the same unique-index entry.
 func NormalizeName(s string) string {
-	// NFC first: "é" typed as e + combining accent becomes the single code
-	// point é, so visually identical names are byte-identical (and hit the
-	// same unique index entry). strings.Fields trims and splits on any Unicode
-	// whitespace (tabs, newlines, NBSP), which re-joining collapses.
 	return strings.Join(strings.Fields(norm.NFC.String(s)), " ")
 }
 
@@ -90,8 +76,8 @@ func parseName(raw string, verr *ValidationError) string {
 	return name
 }
 
-func parseFormField(raw string, verr *ValidationError) Form {
-	if strings.TrimSpace(raw) == "" {
+func parseForm(raw string, verr *ValidationError) Form {
+	if isBlank(raw) {
 		verr.add("form", "is required")
 		return ""
 	}
@@ -105,45 +91,50 @@ func parseFormField(raw string, verr *ValidationError) Form {
 func parseDosage(in DosageInput, verr *ValidationError) Dosage {
 	d := Dosage{
 		Value: parsePositiveAmount("dosage.value", in.Value, verr),
-		Unit:  parseUnitField("dosage.unit", in.Unit, verr),
+		Unit:  parseUnit("dosage.unit", in.Unit, verr),
 	}
-
-	hasPerValue := strings.TrimSpace(in.PerValue) != ""
-	hasPerUnit := strings.TrimSpace(in.PerUnit) != ""
-	switch {
-	case !hasPerValue && !hasPerUnit:
-		return d
-	case !hasPerValue:
-		verr.add("dosage.per_value", "is required when dosage.per_unit is set")
-		return d
-	case !hasPerUnit:
-		verr.add("dosage.per_unit", "is required when dosage.per_value is set")
-		return d
+	if per, ok := parsePer(in, verr); ok {
+		checkConcentration(d.Unit, per.Unit, verr)
+		d.Per = &per
 	}
-
-	per := Quantity{
-		Value: parsePositiveAmount("dosage.per_value", in.PerValue, verr),
-		Unit:  parseUnitField("dosage.per_unit", in.PerUnit, verr),
-	}
-	// Cross-field rules, only meaningful when both units parsed.
-	switch {
-	case d.Unit == "" || per.Unit == "":
-	case d.Unit == UnitPercent || per.Unit == UnitPercent:
-		verr.add("dosage.per_unit", "cannot be combined with %: a percentage is already a concentration")
-	case per.Unit == d.Unit:
-		verr.add("dosage.per_unit", "must differ from dosage.unit")
-	}
-	d.Per = &per
 	return d
 }
 
+func parsePer(in DosageInput, verr *ValidationError) (Quantity, bool) {
+	hasValue, hasUnit := !isBlank(in.PerValue), !isBlank(in.PerUnit)
+	switch {
+	case !hasValue && !hasUnit:
+		return Quantity{}, false
+	case !hasValue:
+		verr.add("dosage.per_value", "is required when dosage.per_unit is set")
+		return Quantity{}, false
+	case !hasUnit:
+		verr.add("dosage.per_unit", "is required when dosage.per_value is set")
+		return Quantity{}, false
+	}
+	return Quantity{
+		Value: parsePositiveAmount("dosage.per_value", in.PerValue, verr),
+		Unit:  parseUnit("dosage.per_unit", in.PerUnit, verr),
+	}, true
+}
+
+func checkConcentration(unit, perUnit Unit, verr *ValidationError) {
+	switch {
+	case unit == "" || perUnit == "":
+		// A unit already failed to parse; a second error would only repeat it.
+	case unit == UnitPercent || perUnit == UnitPercent:
+		verr.add("dosage.per_unit", "cannot be combined with %: a percentage is already a concentration")
+	case unit == perUnit:
+		verr.add("dosage.per_unit", "must differ from dosage.unit")
+	}
+}
+
 func parsePositiveAmount(field, raw string, verr *ValidationError) Amount {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if isBlank(raw) {
 		verr.add(field, "is required")
 		return 0
 	}
-	a, err := ParseAmount(raw)
+	a, err := ParseAmount(strings.TrimSpace(raw))
 	switch {
 	case err != nil:
 		verr.add(field, err.Error())
@@ -153,8 +144,8 @@ func parsePositiveAmount(field, raw string, verr *ValidationError) Amount {
 	return a
 }
 
-func parseUnitField(field, raw string, verr *ValidationError) Unit {
-	if strings.TrimSpace(raw) == "" {
+func parseUnit(field, raw string, verr *ValidationError) Unit {
+	if isBlank(raw) {
 		verr.add(field, "is required")
 		return ""
 	}
@@ -163,4 +154,47 @@ func parseUnitField(field, raw string, verr *ValidationError) Unit {
 		verr.add(field, "must be one of: "+unitList)
 	}
 	return u
+}
+
+func parseOptionalNDC(raw string, verr *ValidationError) NDC {
+	if isBlank(raw) {
+		return ""
+	}
+	n, err := ParseNDC(raw)
+	if err != nil {
+		verr.add("ndc", err.Error())
+	}
+	return n
+}
+
+func parseOptionalRxCUI(raw string, verr *ValidationError) RxCUI {
+	if isBlank(raw) {
+		return ""
+	}
+	id, err := ParseRxCUI(raw)
+	if err != nil {
+		verr.add("rxcui", err.Error())
+	}
+	return id
+}
+
+func parseOptionalRoute(raw string, verr *ValidationError) Route {
+	if isBlank(raw) {
+		return ""
+	}
+	r, ok := ParseRoute(raw)
+	if !ok {
+		verr.add("route", "must be one of: "+routeList)
+	}
+	return r
+}
+
+func isBlank(s string) bool { return strings.TrimSpace(s) == "" }
+
+func joinStrings[T ~string](vals []T) string {
+	s := make([]string, len(vals))
+	for i, v := range vals {
+		s[i] = string(v)
+	}
+	return strings.Join(s, ", ")
 }

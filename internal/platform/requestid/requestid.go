@@ -7,14 +7,13 @@ import (
 	"crypto/rand"
 )
 
-// Header is the HTTP header used to accept and echo the request ID.
 const Header = "X-Request-ID"
 
 const maxLen = 128
 
 type ctxKey struct{}
 
-// New returns a fresh random ID (26 chars, base32, 130 bits of entropy).
+// 130 bits of entropy: collisions are not a practical concern.
 func New() string { return rand.Text() }
 
 // Valid reports whether an inbound ID is safe to reuse: bounded length and a
@@ -35,12 +34,10 @@ func Valid(id string) bool {
 	return true
 }
 
-// With returns a copy of ctx carrying id.
 func With(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, ctxKey{}, id)
 }
 
-// From returns the request ID in ctx, or "" if none.
 func From(ctx context.Context) string {
 	id, _ := ctx.Value(ctxKey{}).(string)
 	return id

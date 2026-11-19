@@ -6,12 +6,11 @@ import (
 	"time"
 )
 
-// quietPaths are probe endpoints hit every few seconds; logged at debug only.
+// Probes hit every few seconds; at info level they would drown real traffic.
 var quietPaths = map[string]bool{"/healthz": true, "/readyz": true}
 
-// AccessLog writes one structured line per request after it completes.
-// It never logs bodies, query strings or headers (they may carry user input or
-// credentials); request_id is added by the context-aware logger.
+// Bodies, query strings and headers are never logged: they may carry user
+// input or credentials.
 func AccessLog(log *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -19,26 +18,32 @@ func AccessLog(log *slog.Logger) Middleware {
 			sw := wrap(w)
 			// Deferred so the line is still written when a panic propagates
 			// (e.g. the http.ErrAbortHandler re-panic from Recover).
-			defer func() {
-				status := sw.Status()
-				level := slog.LevelInfo
-				switch {
-				case quietPaths[r.URL.Path]:
-					// Probe 503s are expected while draining; real dependency
-					// failures are already logged by the readiness handler.
-					level = slog.LevelDebug
-				case status >= 500:
-					level = slog.LevelError
-				}
-				log.LogAttrs(r.Context(), level, "http request",
-					slog.String("method", r.Method),
-					slog.String("path", r.URL.Path),
-					slog.Int("status", status),
-					slog.Int64("bytes", sw.bytes),
-					slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
-				)
-			}()
+			defer logRequest(log, r, sw, start)
 			next.ServeHTTP(sw, r)
 		})
+	}
+}
+
+func logRequest(log *slog.Logger, r *http.Request, sw *statusWriter, start time.Time) {
+	status := sw.Status()
+	log.LogAttrs(r.Context(), requestLogLevel(r.URL.Path, status), "http request",
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+		slog.Int("status", status),
+		slog.Int64("bytes", sw.bytes),
+		slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
+	)
+}
+
+func requestLogLevel(path string, status int) slog.Level {
+	switch {
+	case quietPaths[path]:
+		// Probe 503s are expected while draining; real dependency failures
+		// are already logged by the readiness handler.
+		return slog.LevelDebug
+	case status >= 500:
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }

@@ -20,7 +20,7 @@ func Liveness(w http.ResponseWriter, _ *http.Request) {
 	writeStatus(w, http.StatusOK, `{"status":"ok"}`)
 }
 
-// Pinger is satisfied by *pgxpool.Pool.
+// Pinger is the slice of *pgxpool.Pool readiness needs, so tests can fake it.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
@@ -34,13 +34,11 @@ type Readiness struct {
 	draining atomic.Bool
 }
 
-// NewReadiness returns a readiness probe that pings db with the given timeout.
 func NewReadiness(db Pinger, timeout time.Duration, log *slog.Logger) *Readiness {
 	return &Readiness{db: db, timeout: timeout, log: log}
 }
 
-// SetDraining makes every subsequent probe fail. It is called when shutdown
-// starts and is never reverted. Safe for concurrent use.
+// Never reverted: once shutdown starts, this instance must not get traffic again.
 func (r *Readiness) SetDraining() { r.draining.Store(true) }
 
 func (r *Readiness) ServeHTTP(w http.ResponseWriter, req *http.Request) {
