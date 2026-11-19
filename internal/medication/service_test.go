@@ -104,3 +104,26 @@ func TestService_RepositoryErrorsAreWrapped(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 }
+
+func TestService_List_FetchesOneExtraToDetectMore(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	for _, name := range []string{"A", "B", "C"} {
+		if _, err := svc.Create(t.Context(), Input{Name: name, Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := svc.List(t.Context(), ListParams{Limit: 2})
+	if err != nil || len(page.Items) != 2 || !page.HasMore {
+		t.Fatalf("first page: %d items, more=%v, err=%v", len(page.Items), page.HasMore, err)
+	}
+	page, err = svc.List(t.Context(), ListParams{Limit: 2, After: page.Items[1].ID})
+	if err != nil || len(page.Items) != 1 || page.HasMore {
+		t.Fatalf("last page: %d items, more=%v, err=%v", len(page.Items), page.HasMore, err)
+	}
+	page, err = svc.List(t.Context(), ListParams{Limit: 3})
+	if err != nil || len(page.Items) != 3 || page.HasMore {
+		t.Fatalf("exact fit must not report more: %d items, more=%v", len(page.Items), page.HasMore)
+	}
+}

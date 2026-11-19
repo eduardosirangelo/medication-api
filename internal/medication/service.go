@@ -15,8 +15,10 @@ type Repository interface {
 	// Create returns the stored row, including database-assigned version and timestamps.
 	Create(ctx context.Context, m Medication) (Medication, error)
 	Get(ctx context.Context, id uuid.UUID) (Medication, error)
+	// List returns up to limit active medications matching f with ID < after
+	// (all when after is uuid.Nil), newest first.
+	List(ctx context.Context, f ListFilter, after uuid.UUID, limit int) ([]Medication, error)
 
-	// TODO(slice-6): List(ctx, ListParams) (Page, error)
 	// TODO(slice-7): Update(ctx, id, expectedVersion, Spec) (Medication, error)
 	// TODO(slice-8): Delete(ctx, id, expectedVersion *int64) error
 }
@@ -46,6 +48,19 @@ func (s *Service) Create(ctx context.Context, in Input) (Medication, error) {
 		return Medication{}, fmt.Errorf("create medication: %w", err)
 	}
 	return m, nil
+}
+
+// One extra row is fetched to learn whether another page exists without a
+// separate COUNT, which would scan every matching row.
+func (s *Service) List(ctx context.Context, p ListParams) (Page, error) {
+	items, err := s.repo.List(ctx, p.ListFilter, p.After, p.Limit+1)
+	if err != nil {
+		return Page{}, fmt.Errorf("list medications: %w", err)
+	}
+	if len(items) > p.Limit {
+		return Page{Items: items[:p.Limit], HasMore: true}, nil
+	}
+	return Page{Items: items}, nil
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Medication, error) {

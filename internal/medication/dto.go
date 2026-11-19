@@ -54,6 +54,25 @@ type medicationResponse struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+// next_cursor is always present (null on the last page) so clients can rely
+// on the field rather than on its absence.
+type listResponse struct {
+	Data       []medicationResponse `json:"data"`
+	NextCursor *string              `json:"next_cursor"`
+}
+
+func toListResponse(page Page, f ListFilter) listResponse {
+	resp := listResponse{Data: make([]medicationResponse, len(page.Items))} // [] not null when empty
+	for i, m := range page.Items {
+		resp.Data[i] = toResponse(m)
+	}
+	if page.HasMore {
+		next := encodeCursor(page.Items[len(page.Items)-1].ID, f)
+		resp.NextCursor = &next
+	}
+	return resp
+}
+
 type dosageResponse struct {
 	Value    json.Number `json:"value"`
 	Unit     string      `json:"unit"`

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,6 +29,17 @@ func newTestAPI(t *testing.T) *testAPI {
 	var logs bytes.Buffer
 	mux := http.NewServeMux()
 	NewHandler(newTestService(repo), slog.New(slog.NewJSONHandler(&logs, nil))).Register(mux)
+	return &testAPI{repo: repo, mux: mux, logs: &logs}
+}
+
+// Listing needs distinct, time-ordered IDs, so this variant keeps the real
+// UUIDv7 generator instead of the fixed ID.
+func newRandomIDAPI(t *testing.T) *testAPI {
+	t.Helper()
+	repo := newFakeRepo()
+	var logs bytes.Buffer
+	mux := http.NewServeMux()
+	NewHandler(NewService(repo), slog.New(slog.NewJSONHandler(&logs, nil))).Register(mux)
 	return &testAPI{repo: repo, mux: mux, logs: &logs}
 }
 
@@ -293,4 +305,112 @@ func TestGet(t *testing.T) {
 			t.Error("malformed id must not hit the repository")
 		}
 	})
+}
+
+type listBody struct {
+	Data       []medicationResponse `json:"data"`
+	NextCursor *string              `json:"next_cursor"`
+}
+
+func seed(t *testing.T, api *testAPI, n int, form string) {
+	t.Helper()
+	for i := range n {
+		body := `{"name":"Med ` + string(rune('A'+i)) + `","form":"` + form + `","dosage":{"value":` + strconv.Itoa(i+1) + `,"unit":"mg"}}`
+		if rec := api.do(t, http.MethodPost, "/v1/medications", body); rec.Code != http.StatusCreated {
+			t.Fatalf("seed %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestList_EmptyIsArrayAndNullCursor(t *testing.T) {
+	api := newRandomIDAPI(t)
+	rec := api.do(t, http.MethodGet, "/v1/medications", "")
+	if rec.Code != http.StatusOK || rec.Body.String() != `{"data":[],"next_cursor":null}` {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Link") != "" {
+		t.Error("no Link header on the last page")
+	}
+}
+
+func TestList_WalkAllPagesViaLinkHeader(t *testing.T) {
+	api := newRandomIDAPI(t)
+	seed(t, api, 5, "tablet")
+	seed(t, api, 2, "capsule")
+
+	var names []string
+	next := "/v1/medications?form=tablet&limit=2"
+	for pages := 0; next != ""; pages++ {
+		if pages > 5 {
+			t.Fatal("pagination did not terminate")
+		}
+		rec := api.do(t, http.MethodGet, next, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d %s", next, rec.Code, rec.Body.String())
+		}
+		body := decodeBody[listBody](t, rec)
+		for _, m := range body.Data {
+			names = append(names, m.Name)
+		}
+		next = linkTarget(t, rec.Header().Get("Link"))
+		if (body.NextCursor == nil) != (next == "") {
+			t.Fatalf("next_cursor and Link disagree: %v / %q", body.NextCursor, next)
+		}
+	}
+	// Newest first, every tablet exactly once, no capsules.
+	want := []string{"Med E", "Med D", "Med C", "Med B", "Med A"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+func linkTarget(t *testing.T, header string) string {
+	t.Helper()
+	if header == "" {
+		return ""
+	}
+	target, rel, ok := strings.Cut(header, ">; ")
+	if !ok || rel != `rel="next"` || !strings.HasPrefix(target, "<") {
+		t.Fatalf("malformed Link header %q", header)
+	}
+	return strings.TrimPrefix(target, "<")
+}
+
+func TestList_NameFilterIsCaseInsensitiveSubstring(t *testing.T) {
+	api := newRandomIDAPI(t)
+	for _, body := range []string{
+		`{"name":"Amoxicillin","form":"capsule","dosage":{"value":500,"unit":"mg"}}`,
+		`{"name":"Co-Amoxiclav","form":"tablet","dosage":{"value":625,"unit":"mg"}}`,
+		`{"name":"Ibuprofen","form":"tablet","dosage":{"value":200,"unit":"mg"}}`,
+	} {
+		api.do(t, http.MethodPost, "/v1/medications", body)
+	}
+	body := decodeBody[listBody](t, api.do(t, http.MethodGet, "/v1/medications?name=AMOX", ""))
+	if len(body.Data) != 2 {
+		t.Fatalf("want 2 matches, got %+v", body.Data)
+	}
+}
+
+func TestList_BadQueryIs400WithFieldErrors(t *testing.T) {
+	api := newRandomIDAPI(t)
+	rec := api.do(t, http.MethodGet, "/v1/medications?limit=1000&colour=red", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if p := decodeBody[httpx.Problem](t, rec); len(p.Errors) != 2 {
+		t.Errorf("want limit and colour errors, got %+v", p.Errors)
+	}
+}
+
+func TestList_CursorFromOtherFiltersIs400(t *testing.T) {
+	api := newRandomIDAPI(t)
+	seed(t, api, 3, "tablet")
+	first := decodeBody[listBody](t, api.do(t, http.MethodGet, "/v1/medications?limit=1", ""))
+	if first.NextCursor == nil {
+		t.Fatal("expected a next cursor")
+	}
+	rec := api.do(t, http.MethodGet, "/v1/medications?limit=1&form=capsule&cursor="+*first.NextCursor, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
 }

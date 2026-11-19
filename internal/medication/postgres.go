@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +18,10 @@ const pgUniqueViolation = "23505"
 
 // Each unique constraint maps to its own domain error; any other unique
 // violation (e.g. a primary-key collision) is a bug, not a client conflict.
+//
+// Identity is name + dosage + form because an entry is a clinical drug, like
+// RxNorm's (ingredient + strength + dose form), not a package: ndc is just one
+// representative package code, and other packages belong in a child resource.
 var uniqueConstraintErrors = map[string]error{
 	"medications_active_identity_key": ErrDuplicate,
 	"medications_active_ndc_key":      ErrDuplicateNDC,
@@ -71,6 +77,56 @@ func (r *PostgresRepository) Get(ctx context.Context, id uuid.UUID) (Medication,
 	}
 	return m, nil
 }
+
+func (r *PostgresRepository) List(ctx context.Context, f ListFilter, after uuid.UUID, limit int) ([]Medication, error) {
+	query, args := buildListQuery(f, after, limit)
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list medications: %w", err)
+	}
+	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Medication, error) {
+		return scanMedication(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list medications: %w", err)
+	}
+	return items, nil
+}
+
+// Only the active conditions are added. A static query with
+// "($n IS NULL OR col = $n)" would be simpler, but once PostgreSQL switches a
+// prepared statement to a generic plan it can no longer use the form or
+// trigram indexes for those branches.
+func buildListQuery(f ListFilter, after uuid.UUID, limit int) (string, []any) {
+	var (
+		where = []string{"deleted_at IS NULL"}
+		args  []any
+	)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+	if f.Form != "" {
+		where = append(where, "form = "+addArg(string(f.Form)))
+	}
+	if f.NameContains != "" {
+		where = append(where, "name ILIKE "+addArg("%"+escapeLike(f.NameContains)+"%"))
+	}
+	if after != uuid.Nil {
+		where = append(where, "id < "+addArg(after))
+	}
+	query := "SELECT " + selectColumns + " FROM medications WHERE " + strings.Join(where, " AND ") +
+		" ORDER BY id DESC LIMIT " + addArg(limit)
+	return query, args
+}
+
+// User input must match literally: without escaping, "50%" or "a_b" would act
+// as wildcards. Backslash is PostgreSQL's default LIKE escape character.
+func escapeLike(s string) string {
+	return likeEscaper.Replace(s)
+}
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 func translateUniqueViolation(err error) error {
 	var pgErr *pgconn.PgError

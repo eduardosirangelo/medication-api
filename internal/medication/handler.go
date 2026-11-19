@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/google/uuid"
 
@@ -26,11 +27,14 @@ func NewHandler(svc *Service, log *slog.Logger) *Handler {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+basePath, h.create)
+	mux.HandleFunc("GET "+basePath, h.list)
 	mux.HandleFunc("GET "+basePath+"/{id}", h.get)
-	// TODO(slice-6): GET    /v1/medications       list, filters, cursor
+	// TODO: ndc and rxcui filters on the list (exact match, already indexed for ndc).
 	// TODO(slice-7): PUT    /v1/medications/{id}  If-Match required
 	// TODO(slice-8): DELETE /v1/medications/{id}  soft delete, If-Match optional
 	// TODO: PATCH with application/merge-patch+json (RFC 7396).
+	// TODO: /v1/medications/{id}/products child resource holding every NDC
+	// (one per manufacturer/package) for this clinical drug.
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +53,30 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", basePath+"/"+m.ID.String())
 	w.Header().Set("ETag", httpx.ETag(m.Version))
 	httpx.WriteJSON(w, r, http.StatusCreated, toResponse(m))
+}
+
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	params, err := parseListQuery(r.URL.Query())
+	if err != nil {
+		h.writeQueryError(w, r, err)
+		return
+	}
+	page, err := h.svc.List(r.Context(), params)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	resp := toListResponse(page, params.ListFilter)
+	if resp.NextCursor != nil {
+		w.Header().Set("Link", nextLink(r.URL.Query(), *resp.NextCursor))
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, resp)
+}
+
+// RFC 8288 Link lets generic clients paginate without knowing our body shape.
+func nextLink(q url.Values, cursor string) string {
+	q.Set("cursor", cursor)
+	return "<" + basePath + "?" + q.Encode() + `>; rel="next"`
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -119,10 +147,27 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 	}
 }
 
+func (h *Handler) writeQueryError(w http.ResponseWriter, r *http.Request, err error) {
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		h.writeError(w, r, err)
+		return
+	}
+	p := httpx.NewProblem(http.StatusBadRequest, "The query string contains invalid parameters.")
+	p.Errors = toProblemFields(verr)
+	httpx.WriteProblem(w, r, p)
+}
+
 func validationProblem(verr *ValidationError) httpx.Problem {
 	p := httpx.NewProblem(http.StatusUnprocessableEntity, "The request contains invalid fields.")
-	for _, f := range verr.Fields {
-		p.Errors = append(p.Errors, httpx.FieldError{Field: f.Field, Message: f.Message})
-	}
+	p.Errors = toProblemFields(verr)
 	return p
+}
+
+func toProblemFields(verr *ValidationError) []httpx.FieldError {
+	fields := make([]httpx.FieldError, len(verr.Fields))
+	for i, f := range verr.Fields {
+		fields[i] = httpx.FieldError{Field: f.Field, Message: f.Message}
+	}
+	return fields
 }

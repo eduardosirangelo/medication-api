@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -361,5 +363,134 @@ func TestHTTP_CreateThenGet_RealDatabase(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("ETag") != created.Get("ETag") {
 		t.Fatalf("GET = %d ETag %q (create ETag %q)", resp.StatusCode, resp.Header.Get("ETag"), created.Get("ETag"))
+	}
+}
+
+func createNamed(t *testing.T, repo *PostgresRepository, name, form string) Medication {
+	t.Helper()
+	m, err := repo.Create(t.Context(), newMed(t, Input{Name: name, Form: form, Dosage: DosageInput{Value: "1", Unit: "mg"}}))
+	if err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	return m
+}
+
+func names(ms []Medication) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.Name
+	}
+	return out
+}
+
+func TestPostgres_ListFilters(t *testing.T) {
+	repo := freshRepo(t)
+	for _, n := range []string{"Amoxicillin", "Co-Amoxiclav", "Ibuprofen", "Dipirona Sódica", "50% Dextrose", "50X Dextrose", "a_b", "axb"} {
+		createNamed(t, repo, n, "tablet")
+	}
+	createNamed(t, repo, "Amoxicillin Susp", "liquid")
+	deleted := createNamed(t, repo, "Amoxicillin Old", "tablet")
+	if _, err := testPool.Exec(t.Context(), "UPDATE medications SET deleted_at = now() WHERE id = $1", deleted.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		filter ListFilter
+		want   []string // newest first
+	}{
+		{ListFilter{NameContains: "amox"}, []string{"Amoxicillin Susp", "Co-Amoxiclav", "Amoxicillin"}},
+		{ListFilter{NameContains: "AMOX", Form: FormTablet}, []string{"Co-Amoxiclav", "Amoxicillin"}},
+		{ListFilter{NameContains: "sódica"}, []string{"Dipirona Sódica"}},
+		{ListFilter{NameContains: "50%"}, []string{"50% Dextrose"}}, // % is literal, not a wildcard
+		{ListFilter{NameContains: "a_b"}, []string{"a_b"}},          // _ is literal too
+		{ListFilter{Form: FormLiquid}, []string{"Amoxicillin Susp"}},
+		{ListFilter{NameContains: "nothing"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.filter.NameContains+"|"+string(tt.filter.Form), func(t *testing.T) {
+			got, err := repo.List(t.Context(), tt.filter, uuid.Nil, 50)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(names(got), ",") != strings.Join(tt.want, ",") {
+				t.Errorf("got %v, want %v", names(got), tt.want)
+			}
+		})
+	}
+}
+
+// Keyset pagination is stable under concurrent inserts: new rows get larger
+// UUIDv7s and appear before page one, never shifting later pages (unlike OFFSET).
+func TestPostgres_ListKeysetIsStableUnderInserts(t *testing.T) {
+	repo := freshRepo(t)
+	svc := NewService(repo)
+	var created []string
+	for i := range 7 {
+		created = append(created, createNamed(t, repo, "Med "+strconv.Itoa(i), "tablet").Name)
+	}
+
+	var seen []string
+	params := ListParams{Limit: 3}
+	for page := 0; ; page++ {
+		p, err := svc.List(t.Context(), params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, names(p.Items)...)
+		if page == 0 {
+			createNamed(t, repo, "Inserted mid-walk", "tablet")
+		}
+		if !p.HasMore {
+			break
+		}
+		params.After = p.Items[len(p.Items)-1].ID
+	}
+
+	slices.Reverse(created)
+	if strings.Join(seen, ",") != strings.Join(created, ",") {
+		t.Errorf("walk = %v\nwant  %v (each once, newest first, insert not interleaved)", seen, created)
+	}
+}
+
+// With enough rows for the planner to prefer indexes, each filter must be
+// served by its index rather than a sequential scan.
+func TestPostgres_ListUsesIndexes(t *testing.T) {
+	freshRepo(t)
+	ctx := t.Context()
+	_, err := testPool.Exec(ctx, `
+		INSERT INTO medications (id, name, dosage_value, dosage_unit, form)
+		SELECT gen_random_uuid(), 'Drug ' || g, g, 'mg', (ARRAY['tablet','capsule','liquid'])[1 + g % 3]
+		FROM generate_series(1, 20000) g`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, "ANALYZE medications"); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		filter    ListFilter
+		wantIndex string
+	}{
+		{ListFilter{}, "medications_active_id_idx"},
+		{ListFilter{Form: FormLiquid}, "medications_active_form_id_idx"},
+		{ListFilter{NameContains: "rug 1234"}, "medications_active_name_trgm_idx"},
+	}
+	for _, tt := range tests {
+		query, args := buildListQuery(tt.filter, uuid.Nil, 21)
+		var plan strings.Builder
+		rows, err := testPool.Query(ctx, "EXPLAIN "+query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var line string
+			_ = rows.Scan(&line)
+			plan.WriteString(line + "\n")
+		}
+		rows.Close()
+		if !strings.Contains(plan.String(), tt.wantIndex) {
+			t.Errorf("filter %+v: plan does not use %s:\n%s", tt.filter, tt.wantIndex, plan.String())
+		}
 	}
 }

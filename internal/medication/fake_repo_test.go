@@ -2,6 +2,7 @@ package medication
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,33 @@ func (f *fakeRepo) Create(_ context.Context, m Medication) (Medication, error) {
 	m.Version, m.CreatedAt, m.UpdatedAt = 1, f.now, f.now
 	f.rows[m.ID] = m
 	return m, nil
+}
+
+func (f *fakeRepo) List(_ context.Context, filter ListFilter, after uuid.UUID, limit int) ([]Medication, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []Medication
+	for _, m := range f.rows {
+		if matchesFilter(m, filter) && (after == uuid.Nil || m.ID.String() < after.String()) {
+			out = append(out, m)
+		}
+	}
+	slices.SortFunc(out, func(a, b Medication) int { return strings.Compare(b.ID.String(), a.ID.String()) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func matchesFilter(m Medication, f ListFilter) bool {
+	if f.Form != "" && m.Form != f.Form {
+		return false
+	}
+	return strings.Contains(strings.ToLower(m.Name), strings.ToLower(f.NameContains))
 }
 
 func (f *fakeRepo) Get(_ context.Context, id uuid.UUID) (Medication, error) {
