@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type HTTP struct {
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
+	MaxBodyBytes      int64
 }
 
 // Load reads configuration using lookup, applying defaults for unset variables.
@@ -42,6 +44,7 @@ func Load(lookup LookupFunc) (Config, error) {
 			WriteTimeout:      p.duration("HTTP_WRITE_TIMEOUT", 15*time.Second),
 			IdleTimeout:       p.duration("HTTP_IDLE_TIMEOUT", 60*time.Second),
 			ShutdownTimeout:   p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
+			MaxBodyBytes:      p.positiveInt64("HTTP_MAX_BODY_BYTES", 64<<10), // 64 KiB: a medication record is < 1 KiB
 		},
 		LogLevel: p.logLevel("LOG_LEVEL", slog.LevelInfo),
 	}
@@ -93,6 +96,19 @@ func (p *parser) duration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func (p *parser) positiveInt64(key string, def int64) int64 {
+	v, ok := p.get(key)
+	if !ok {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		p.fail(key, v, "must be a positive integer")
+		return def
+	}
+	return n
 }
 
 func (p *parser) logLevel(key string, def slog.Level) slog.Level {

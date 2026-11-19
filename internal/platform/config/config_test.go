@@ -27,6 +27,7 @@ func TestLoad_Defaults(t *testing.T) {
 			WriteTimeout:      15 * time.Second,
 			IdleTimeout:       60 * time.Second,
 			ShutdownTimeout:   20 * time.Second,
+			MaxBodyBytes:      64 << 10,
 		},
 		LogLevel: slog.LevelInfo,
 	}
@@ -43,6 +44,7 @@ func TestLoad_Overrides(t *testing.T) {
 		"HTTP_WRITE_TIMEOUT":       "4s",
 		"HTTP_IDLE_TIMEOUT":        "1m",
 		"SHUTDOWN_TIMEOUT":         "30s",
+		"HTTP_MAX_BODY_BYTES":      "2048",
 		"LOG_LEVEL":                "debug",
 	}))
 	if err != nil {
@@ -54,6 +56,7 @@ func TestLoad_Overrides(t *testing.T) {
 		cfg.HTTP.WriteTimeout != 4*time.Second ||
 		cfg.HTTP.IdleTimeout != time.Minute ||
 		cfg.HTTP.ShutdownTimeout != 30*time.Second ||
+		cfg.HTTP.MaxBodyBytes != 2048 ||
 		cfg.LogLevel != slog.LevelDebug {
 		t.Fatalf("overrides not applied: %+v", cfg)
 	}
@@ -79,6 +82,8 @@ func TestLoad_Invalid(t *testing.T) {
 		{"bad duration", map[string]string{"HTTP_READ_TIMEOUT": "ten"}, []string{"HTTP_READ_TIMEOUT"}},
 		{"zero duration", map[string]string{"SHUTDOWN_TIMEOUT": "0s"}, []string{"SHUTDOWN_TIMEOUT"}},
 		{"negative duration", map[string]string{"HTTP_IDLE_TIMEOUT": "-1s"}, []string{"HTTP_IDLE_TIMEOUT"}},
+		{"bad body limit", map[string]string{"HTTP_MAX_BODY_BYTES": "1MB"}, []string{"HTTP_MAX_BODY_BYTES"}},
+		{"zero body limit", map[string]string{"HTTP_MAX_BODY_BYTES": "0"}, []string{"HTTP_MAX_BODY_BYTES"}},
 		{"bad log level", map[string]string{"LOG_LEVEL": "verbose"}, []string{"LOG_LEVEL"}},
 		{
 			"all errors reported together",

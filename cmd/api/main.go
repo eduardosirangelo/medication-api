@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/health"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
+	"github.com/eduardo-sirangelo/medication-api/internal/platform/middleware"
 )
 
 func main() {
@@ -35,11 +37,22 @@ func run(ctx context.Context, lookup config.LookupFunc, stdout io.Writer) error 
 		return err
 	}
 	log := logging.New(stdout, cfg.LogLevel)
+	slog.SetDefault(log) // for code paths without an injected logger
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Liveness)
-	// TODO(slice-2): middleware chain (request ID, recovery, access log, body limit).
 	// TODO(slice-3): GET /readyz, database pool, migrations.
+
+	// Outermost first. RequestID runs before everything so logs and problem
+	// bodies carry the ID; AccessLog wraps Recover so recovered panics are
+	// logged with their final 500 status.
+	handler := middleware.Chain(httpx.WithProblemFallback(mux),
+		middleware.RequestID(),
+		middleware.AccessLog(log),
+		middleware.Recover(log),
+		// TODO(slice-9): API key authentication.
+		middleware.MaxBodyBytes(cfg.HTTP.MaxBodyBytes),
+	)
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.HTTP.Addr)
@@ -47,6 +60,6 @@ func run(ctx context.Context, lookup config.LookupFunc, stdout io.Writer) error 
 		return fmt.Errorf("listen on %s: %w", cfg.HTTP.Addr, err)
 	}
 
-	srv := httpx.NewServer(cfg.HTTP, mux, log)
+	srv := httpx.NewServer(cfg.HTTP, handler, log)
 	return httpx.Serve(ctx, srv, ln, cfg.HTTP.ShutdownTimeout, log)
 }
