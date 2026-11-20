@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# End-to-end smoke test against a running API: create → get → 304 → list →
+# End-to-end smoke test against a running API: auth → create → get → 304 → list →
 # replace (200/412/428) → delete → 404 → re-create → prices → error cases.
-# Usage: BASE_URL=http://localhost:8080 scripts/smoke.sh   (needs curl and jq)
+# Usage: BASE_URL=http://localhost:8080 API_KEY=... scripts/smoke.sh   (needs curl and jq)
 set -uo pipefail
 
 BASE_URL=${BASE_URL:-http://localhost:8080}
-API_KEY=${API_KEY:-dev-local-key} # placeholder until slice 9 enforces it
+API_KEY=${API_KEY:-local-dev-key-change-me} # the local key from .env.example
 NAME="Smoke Amoxicillin $(date +%s)-$$" # unique, so the script can be re-run
 BODY=$(mktemp) HEADERS=$(mktemp)
 trap 'rm -f "$BODY" "$HEADERS"' EXIT
 failures=0
 
+key=$API_KEY
+
 # request METHOD PATH [curl args...]: sets $status; body and headers land in files.
+# Sends $key as X-API-Key unless it is empty.
 request() {
   local method=$1 path=$2; shift 2
+  local auth=(); [[ -n $key ]] && auth=(-H "X-API-Key: $key")
   status=$(curl -sS -o "$BODY" -D "$HEADERS" -w '%{http_code}' -X "$method" \
-    -H "X-API-Key: $API_KEY" "$@" "$BASE_URL$path") || status=000
+    "${auth[@]}" "$@" "$BASE_URL$path") || status=000
 }
+
+# as_key KEY COMMAND...: run one step with a different key ("" = none).
+as_key() { local key=$1; shift; "$@"; }
 
 header() { grep -i "^$1:" "$HEADERS" | head -1 | cut -d' ' -f2- | tr -d '\r'; }
 
@@ -38,8 +45,11 @@ json() { jq -n --arg name "$NAME" --argjson value "$1" \
 # NDCs are unique among active entries, so each run derives a fresh one.
 NDC=$(printf '%011d' $(( ($(date +%s) * 1000 + $$ % 1000) % 100000000000 )))
 
-request GET /healthz;                                   expect 200 "liveness"
-request GET /readyz;                                    expect 200 "readiness"
+as_key "" request GET /healthz;                         expect 200 "liveness (no key)"
+as_key "" request GET /readyz;                          expect 200 "readiness (no key)"
+as_key "" request GET /v1/medications;                  expect 401 "no key"
+[[ $(header WWW-Authenticate) == ApiKey* ]] || { echo "FAIL  401 without WWW-Authenticate"; failures=$((failures + 1)); }
+as_key wrong-key-0123456789 request GET /v1/medications; expect 401 "wrong key"
 
 request POST /v1/medications -H 'Content-Type: application/json' -d "$(json 250)"
 expect 201 "create"

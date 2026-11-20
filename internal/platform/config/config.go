@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,6 +22,7 @@ type Config struct {
 	HTTP     HTTP
 	DB       DB
 	Pricing  Pricing
+	Auth     Auth
 	LogLevel slog.Level
 }
 
@@ -58,6 +61,18 @@ type Pricing struct {
 	Budget time.Duration
 }
 
+// Auth holds the static API keys accepted by the service. An empty list is
+// valid and means every protected request is rejected (deny by default).
+type Auth struct {
+	Keys []APIKey
+}
+
+// APIKey pairs a public identifier, safe to log, with the secret key.
+type APIKey struct {
+	ID  string
+	Key Secret
+}
+
 // Secret is a string that never prints its value (fmt, %+v, slog).
 type Secret string
 
@@ -94,6 +109,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		Pricing: Pricing{
 			Budget: p.duration("PRICING_BUDGET", 300*time.Millisecond),
 		},
+		Auth:     Auth{Keys: p.apiKeys("API_KEYS")},
 		LogLevel: p.logLevel("LOG_LEVEL", slog.LevelInfo),
 	}
 
@@ -138,6 +154,41 @@ func (p *parser) required(key string) string {
 		p.errs = append(p.errs, fmt.Errorf("%s: is required", key))
 	}
 	return v
+}
+
+// Keys shorter than this are guessable; 16 random characters already give
+// far more entropy than an online attacker can search.
+const minAPIKeyLength = 16
+
+var apiKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// apiKeys parses "id:key,id:key". Errors name the entry by position or ID,
+// never by key, so a typo in a secret does not end up in deployment logs.
+func (p *parser) apiKeys(name string) []APIKey {
+	v, ok := p.get(name)
+	if !ok {
+		return nil
+	}
+	var keys []APIKey
+	ids, secrets := map[string]bool{}, map[string]bool{}
+	for i, entry := range strings.Split(v, ",") {
+		id, key, found := strings.Cut(strings.TrimSpace(entry), ":")
+		switch {
+		case !found || !apiKeyIDPattern.MatchString(id):
+			p.errs = append(p.errs, fmt.Errorf("%s: entry %d: want id:key with id of 1-64 letters, digits, '-' or '_'", name, i+1))
+		case len(key) < minAPIKeyLength:
+			p.errs = append(p.errs, fmt.Errorf("%s: key %q: must be at least %d characters", name, id, minAPIKeyLength))
+		case ids[id]:
+			p.errs = append(p.errs, fmt.Errorf("%s: key %q: duplicate id", name, id))
+		case secrets[key]:
+			// The same secret under two IDs would make audit logs ambiguous.
+			p.errs = append(p.errs, fmt.Errorf("%s: key %q: reuses another entry's secret", name, id))
+		default:
+			ids[id], secrets[key] = true, true
+			keys = append(keys, APIKey{ID: id, Key: Secret(key)})
+		}
+	}
+	return keys
 }
 
 func (p *parser) addr(key, def string) string {

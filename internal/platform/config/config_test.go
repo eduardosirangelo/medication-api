@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func TestLoad_Defaults(t *testing.T) {
 		Pricing:  Pricing{Budget: 300 * time.Millisecond},
 		LogLevel: slog.LevelInfo,
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 }
@@ -130,6 +131,11 @@ func TestLoad_Invalid(t *testing.T) {
 		{"bad bool", map[string]string{"MIGRATE_ON_START": "yes please"}, []string{"MIGRATE_ON_START"}},
 		{"zero pricing budget", map[string]string{"PRICING_BUDGET": "0s"}, []string{"PRICING_BUDGET"}},
 		{"budget not below write timeout", map[string]string{"PRICING_BUDGET": "2s", "HTTP_WRITE_TIMEOUT": "2s"}, []string{"must be below HTTP_WRITE_TIMEOUT"}},
+		{"api key without id", map[string]string{"API_KEYS": "0123456789abcdef"}, []string{"API_KEYS: entry 1"}},
+		{"api key id with spaces", map[string]string{"API_KEYS": "my app:0123456789abcdef"}, []string{"API_KEYS: entry 1"}},
+		{"short api key", map[string]string{"API_KEYS": "app:short"}, []string{`key "app": must be at least 16`}},
+		{"duplicate api key id", map[string]string{"API_KEYS": "app:0123456789abcdef,app:fedcba9876543210"}, []string{"duplicate id"}},
+		{"reused api key secret", map[string]string{"API_KEYS": "a:0123456789abcdef,b:0123456789abcdef"}, []string{`key "b": reuses`}},
 		{"bad log level", map[string]string{"LOG_LEVEL": "verbose"}, []string{"LOG_LEVEL"}},
 		{
 			"all errors reported together",
@@ -152,9 +158,32 @@ func TestLoad_Invalid(t *testing.T) {
 	}
 }
 
-// The DSN contains a password: it must not leak through any printing path.
+func TestLoad_APIKeys(t *testing.T) {
+	cfg, err := Load(lookupFrom(map[string]string{
+		"API_KEYS": " partner-a:0123456789abcdef , ops_cli:with:colons:inside-ok ",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []APIKey{
+		{ID: "partner-a", Key: "0123456789abcdef"},
+		{ID: "ops_cli", Key: "with:colons:inside-ok"}, // split on the first colon only
+	}
+	if !reflect.DeepEqual(cfg.Auth.Keys, want) {
+		t.Fatalf("keys = %#v", cfg.Auth.Keys)
+	}
+}
+
+func TestLoad_APIKeyErrorsNeverEchoTheKey(t *testing.T) {
+	_, err := Load(lookupFrom(map[string]string{"API_KEYS": "a:topsecret-short,:topsecret-0123456789,b:topsecret-0123456789,c:topsecret-0123456789"}))
+	if err == nil || strings.Contains(err.Error(), "topsecret") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The DSN and the API keys are secrets: they must not leak through any printing path.
 func TestSecret_NeverPrinted(t *testing.T) {
-	cfg, err := Load(lookupFrom(nil))
+	cfg, err := Load(lookupFrom(map[string]string{"API_KEYS": "app:s3cret-0123456789"}))
 	if err != nil {
 		t.Fatal(err)
 	}

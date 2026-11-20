@@ -16,24 +16,41 @@ endif
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
+.PHONY: env-check
+env-check:
+	@test -f .env || { echo "error: .env not found. Copy .env.example to .env (cp .env.example .env) and adjust it."; exit 1; }
+
+# Builds once and runs the binary, instead of three `go run` compiles. Ctrl+C
+# reaches the API (graceful shutdown); the database container keeps running.
+.PHONY: dev
+dev: env-check ## One command for local dev: db-up, migrate, seed, then run the API in the foreground
+	@$(MAKE) --no-print-directory db-up build
+	./$(BINARY) migrate
+	./$(BINARY) seed
+	./$(BINARY)
+
+.PHONY: stop
+stop: ## Stop the local containers (keeps the data volume; `make db-up` resumes)
+	docker compose stop
+
 .PHONY: build
 build: ## Build the API binary into ./bin
 	CGO_ENABLED=0 go build -trimpath -o $(BINARY) ./cmd/api
 
 .PHONY: run
-run: ## Run the API locally (reads .env; needs `make db-up`)
+run: env-check ## Run the API locally (reads .env; needs `make db-up`)
 	go run ./cmd/api
 
 .PHONY: migrate
-migrate: ## Apply database migrations (reads .env)
+migrate: env-check ## Apply database migrations (reads .env)
 	go run ./cmd/api migrate
 
 .PHONY: seed
-seed: ## Insert the sample catalog; idempotent, never run against production
+seed: env-check ## Insert the sample catalog; idempotent, never run against production
 	go run ./cmd/api seed
 
 .PHONY: smoke
-smoke: ## Run the end-to-end smoke test against a running API (BASE_URL)
+smoke: ## Run the end-to-end smoke test against a running API (BASE_URL, API_KEY)
 	./scripts/smoke.sh
 
 .PHONY: db-up

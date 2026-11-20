@@ -282,3 +282,18 @@ func TestMaxBodyBytes(t *testing.T) {
 		}
 	})
 }
+
+func TestAccessLog_IncludesAnnotationsFromInnerHandlers(t *testing.T) {
+	var buf bytes.Buffer
+	h := AccessLog(logging.New(&buf, slog.LevelInfo))(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		Annotate(r.Context(), slog.String("key_id", "partner-a"))
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), newReq(t, http.MethodGet, "/v1/x", nil))
+	if l := logLines(t, &buf); len(l) != 1 || l[0]["key_id"] != "partner-a" {
+		t.Fatalf("log = %v", l)
+	}
+}
+
+func TestAnnotate_OutsideAccessLogIsANoOp(t *testing.T) {
+	Annotate(t.Context(), slog.String("k", "v")) // must not panic
+}

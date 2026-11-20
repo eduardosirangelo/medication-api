@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eduardo-sirangelo/medication-api/internal/medication"
+	"github.com/eduardo-sirangelo/medication-api/internal/platform/auth"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/db"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/health"
@@ -35,6 +36,10 @@ const usage = "usage: api [serve|migrate|seed]"
 // Must stay below the orchestrator's probe timeout (Kubernetes defaults to
 // 1s); a pooled ping normally takes well under 10ms.
 const readinessTimeout = 800 * time.Millisecond
+
+// Probes run without credentials; /version (slice 10) carries no data worth
+// protecting and helps confirm a deploy.
+var publicPaths = []string{"/healthz", "/readyz", "/version"}
 
 // os.Exit skips deferred calls, so it lives here and nowhere else.
 func main() {
@@ -121,13 +126,19 @@ func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness
 	comparer := pricing.NewComparer(pricing.DefaultNetworks(), cfg.Pricing.Budget)
 	pricing.NewHandler(meds, comparer, log).Register(mux)
 
+	keys := auth.NewKeyring(cfg.Auth.Keys)
+	if keys.Len() == 0 {
+		log.Warn("API_KEYS is empty: every request outside the public paths will get 401")
+	}
+
 	// RequestID first so every log line and problem body carries the ID;
-	// AccessLog outside Recover so recovered panics are logged as 500s.
+	// AccessLog outside Recover so recovered panics are logged as 500s;
+	// auth before the body limit so unauthenticated callers get 401, not 413.
 	return middleware.Chain(httpx.WithProblemFallback(mux),
 		middleware.RequestID(),
 		middleware.AccessLog(log),
 		middleware.Recover(log),
-		// TODO(slice-9): API key authentication.
+		auth.Require(keys, publicPaths...),
 		middleware.MaxBodyBytes(cfg.HTTP.MaxBodyBytes),
 	)
 }
