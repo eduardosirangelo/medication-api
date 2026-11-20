@@ -2,6 +2,7 @@
 //
 //	api [serve]   run the HTTP server (default)
 //	api migrate   apply pending database migrations and exit
+//	api seed      insert the sample catalog (development and demos only)
 package main
 
 import (
@@ -24,10 +25,11 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/middleware"
+	"github.com/eduardo-sirangelo/medication-api/internal/seed"
 	"github.com/eduardo-sirangelo/medication-api/migrations"
 )
 
-const usage = "usage: api [serve|migrate]"
+const usage = "usage: api [serve|migrate|seed]"
 
 // Must stay below the orchestrator's probe timeout (Kubernetes defaults to
 // 1s); a pooled ping normally takes well under 10ms.
@@ -60,17 +62,21 @@ func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io
 	log := logging.New(stdout, cfg.LogLevel)
 	slog.SetDefault(log)
 
-	if cmd == "migrate" {
+	switch cmd {
+	case "migrate":
 		return migrate(ctx, cfg.DB, log)
+	case "seed":
+		return seedCatalog(ctx, cfg.DB, log)
+	default:
+		return serve(ctx, cfg, log)
 	}
-	return serve(ctx, cfg, log)
 }
 
 func parseCommand(args []string) (string, error) {
 	switch {
 	case len(args) == 0:
 		return "serve", nil
-	case len(args) == 1 && (args[0] == "serve" || args[0] == "migrate"):
+	case len(args) == 1 && (args[0] == "serve" || args[0] == "migrate" || args[0] == "seed"):
 		return args[0], nil
 	default:
 		return "", errors.New(usage)
@@ -130,4 +136,18 @@ func migrate(ctx context.Context, cfg config.DB, log *slog.Logger) error {
 	}
 	defer pool.Close()
 	return db.Migrate(ctx, pool, migrations.FS, log)
+}
+
+// Seeding is never wired into serve or MIGRATE_ON_START: sample rows must
+// only reach a database when someone asks for them by name.
+func seedCatalog(ctx context.Context, cfg config.DB, log *slog.Logger) error {
+	pool, err := db.Open(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	res, err := seed.Run(ctx, medication.NewService(medication.NewPostgresRepository(pool)), seed.Catalog, log)
+	log.InfoContext(ctx, "seed finished", "inserted", res.Inserted, "skipped", res.Skipped)
+	return err
 }

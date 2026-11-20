@@ -1,0 +1,188 @@
+### Medication API: manual walkthrough
+#
+# Run top to bottom against `make run` (after `make db-up`, optionally `make seed`).
+# Written for the JetBrains HTTP Client (GoLand/IntelliJ editor or the ijhttp CLI).
+# Requests and @variables also run in VS Code REST Client, but the `> {% %}`
+# response handlers (captures and assertions) are JetBrains-only there:
+# copy id/ETag into @id/@etag by hand.
+
+@baseUrl = http://localhost:8080
+# Placeholder until slice 9 adds API-key auth; the server ignores it for now.
+@apiKey = dev-local-key
+
+### Liveness
+GET {{baseUrl}}/healthz
+
+> {% client.test("200", () => client.assert(response.status === 200)); %}
+
+### Readiness (pings the database)
+GET {{baseUrl}}/readyz
+
+> {% client.test("200", () => client.assert(response.status === 200)); %}
+
+### Create: a liquid with a concentration (250 mg / 5 mL)
+# The timestamp keeps the name unique so the walkthrough can be re-run.
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "name": "Walkthrough Amoxicillin {{$timestamp}}",
+  "form": "liquid",
+  "dosage": {"value": 250, "unit": "mg", "per_value": 5, "per_unit": "mL"},
+  "route": "oral"
+}
+
+> {%
+    client.test("201 with Location and ETag", () => {
+        client.assert(response.status === 201);
+        client.assert(response.headers.valueOf("Location").endsWith(response.body.id));
+        client.assert(response.headers.valueOf("ETag") === '"1"');
+    });
+    client.global.set("id", response.body.id);
+    client.global.set("etag", response.headers.valueOf("ETag"));
+    client.global.set("name", response.body.name);
+%}
+
+### Get
+GET {{baseUrl}}/v1/medications/{{id}}
+X-API-Key: {{apiKey}}
+
+> {% client.test("200", () => client.assert(response.status === 200)); %}
+
+### Get with If-None-Match: unchanged → 304, no body
+GET {{baseUrl}}/v1/medications/{{id}}
+If-None-Match: {{etag}}
+X-API-Key: {{apiKey}}
+
+> {% client.test("304", () => client.assert(response.status === 304)); %}
+
+### List: substring filter on name and a small page (seeded data gives a second page)
+GET {{baseUrl}}/v1/medications?name=amox&limit=2
+X-API-Key: {{apiKey}}
+
+> {%
+    client.test("200", () => client.assert(response.status === 200));
+    client.global.set("cursor", response.body.next_cursor || "");
+%}
+
+### List: follow next_cursor (an empty cursor just returns the first page)
+# The cursor is bound to the filters, so they must be repeated unchanged.
+GET {{baseUrl}}/v1/medications?name=amox&limit=2&cursor={{cursor}}
+X-API-Key: {{apiKey}}
+
+### Replace with the current ETag → 200, version 2
+PUT {{baseUrl}}/v1/medications/{{id}}
+Content-Type: application/json
+If-Match: {{etag}}
+X-API-Key: {{apiKey}}
+
+{
+  "name": "{{name}}",
+  "form": "liquid",
+  "dosage": {"value": 250, "unit": "mg", "per_value": 5, "per_unit": "mL"},
+  "route": "oral",
+  "ndc": "0093-4155-80"
+}
+
+> {%
+    client.test("200, new ETag", () => {
+        client.assert(response.status === 200);
+        client.assert(response.headers.valueOf("ETag") === '"2"');
+    });
+    client.global.set("staleEtag", client.global.get("etag"));
+    client.global.set("etag", response.headers.valueOf("ETag"));
+%}
+
+### Replace with the stale ETag → 412
+PUT {{baseUrl}}/v1/medications/{{id}}
+Content-Type: application/json
+If-Match: {{staleEtag}}
+X-API-Key: {{apiKey}}
+
+{"name": "{{name}}", "form": "liquid", "dosage": {"value": 125, "unit": "mg", "per_value": 5, "per_unit": "mL"}}
+
+> {% client.test("412", () => client.assert(response.status === 412)); %}
+
+### Replace without If-Match → 428
+PUT {{baseUrl}}/v1/medications/{{id}}
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{"name": "{{name}}", "form": "liquid", "dosage": {"value": 125, "unit": "mg", "per_value": 5, "per_unit": "mL"}}
+
+> {% client.test("428", () => client.assert(response.status === 428)); %}
+
+### Delete with the current ETag → 204 (If-Match is optional on DELETE)
+DELETE {{baseUrl}}/v1/medications/{{id}}
+If-Match: {{etag}}
+X-API-Key: {{apiKey}}
+
+> {% client.test("204", () => client.assert(response.status === 204)); %}
+
+### Get after delete → 404
+GET {{baseUrl}}/v1/medications/{{id}}
+X-API-Key: {{apiKey}}
+
+> {% client.test("404", () => client.assert(response.status === 404)); %}
+
+### Re-create the deleted product → 201 with a new id
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{"name": "{{name}}", "form": "liquid", "dosage": {"value": 250, "unit": "mg", "per_value": 5, "per_unit": "mL"}}
+
+> {%
+    client.test("201, new id", () => {
+        client.assert(response.status === 201);
+        client.assert(response.body.id !== client.global.get("id"));
+    });
+%}
+
+### Error: same product again → 409
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{"name": "{{name}}", "form": "liquid", "dosage": {"value": 250, "unit": "mg", "per_value": 5, "per_unit": "mL"}}
+
+> {% client.test("409", () => client.assert(response.status === 409)); %}
+
+### Error: wrong media type → 415
+POST {{baseUrl}}/v1/medications
+Content-Type: text/plain
+X-API-Key: {{apiKey}}
+
+name=Ibuprofen
+
+> {% client.test("415", () => client.assert(response.status === 415)); %}
+
+### Error: well-formed JSON with invalid content → 422 listing every field
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{"name": "", "form": "gummy", "dosage": {"value": -1, "unit": "spoon"}, "ndc": "123"}
+
+> {%
+    client.test("422 with field errors", () => {
+        client.assert(response.status === 422);
+        client.assert(response.body.errors.length >= 4);
+    });
+%}
+
+### Error: malformed JSON → 400
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{"name": "Ibuprofen",
+
+> {% client.test("400", () => client.assert(response.status === 400)); %}
+
+### Error: unknown query parameter → 400
+GET {{baseUrl}}/v1/medications?colour=red
+X-API-Key: {{apiKey}}
+
+> {% client.test("400", () => client.assert(response.status === 400)); %}

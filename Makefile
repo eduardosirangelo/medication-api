@@ -28,6 +28,14 @@ run: ## Run the API locally (reads .env; needs `make db-up`)
 migrate: ## Apply database migrations (reads .env)
 	go run ./cmd/api migrate
 
+.PHONY: seed
+seed: ## Insert the sample catalog; idempotent, never run against production
+	go run ./cmd/api seed
+
+.PHONY: smoke
+smoke: ## Run the end-to-end smoke test against a running API (BASE_URL)
+	./scripts/smoke.sh
+
 .PHONY: db-up
 db-up: ## Start local PostgreSQL and wait until healthy
 	docker compose up -d --wait db
