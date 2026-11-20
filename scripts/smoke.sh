@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against a running API: create → get → 304 → list →
-# replace (200/412/428) → delete → 404 → re-create → error cases.
+# replace (200/412/428) → delete → 404 → re-create → prices → error cases.
 # Usage: BASE_URL=http://localhost:8080 scripts/smoke.sh   (needs curl and jq)
 set -uo pipefail
 
@@ -35,6 +35,9 @@ json() { jq -n --arg name "$NAME" --argjson value "$1" \
   '{name: $name, form: "liquid", route: "oral",
     dosage: {value: $value, unit: "mg", per_value: 5, per_unit: "mL"}}'; }
 
+# NDCs are unique among active entries, so each run derives a fresh one.
+NDC=$(printf '%011d' $(( ($(date +%s) * 1000 + $$ % 1000) % 100000000000 )))
+
 request GET /healthz;                                   expect 200 "liveness"
 request GET /readyz;                                    expect 200 "readiness"
 
@@ -65,8 +68,22 @@ request DELETE "/v1/medications/$id";                   expect 404 "delete again
 
 request POST /v1/medications -H 'Content-Type: application/json' -d "$(json 125)"
 expect 201 "re-create after delete"
+recreated=$(jq -r .id "$BODY")
 request POST /v1/medications -H 'Content-Type: application/json' -d "$(json 125)"
 expect 409 "duplicate"
+request GET "/v1/medications/$recreated/prices?quantity=30"
+expect 422 "prices without NDC"
+
+request POST /v1/medications -H 'Content-Type: application/json' \
+  -d "$(json 500 | jq --arg ndc "$NDC" '.name += " priced" | .ndc = $ndc')"
+expect 201 "create with NDC"
+priced=$(jq -r .id "$BODY")
+request GET "/v1/medications/$priced/prices?quantity=30"
+expect 200 "prices (simulated fan-out)"
+jq -e '.simulated and .best.price_cents == .quotes[0].price_cents' "$BODY" >/dev/null ||
+  { echo "FAIL  prices body: $(head -c 300 "$BODY")"; failures=$((failures + 1)); }
+request GET "/v1/medications/$priced/prices?quantity=0"
+expect 400 "prices with invalid quantity"
 
 request POST /v1/medications -H 'Content-Type: text/plain' -d 'name=x'
 expect 415 "wrong content type"

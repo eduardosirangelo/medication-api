@@ -90,3 +90,13 @@ func FuzzAmountRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+// ParseAmount runs on every dosage field of every write; it should not allocate.
+func BenchmarkParseAmount(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ParseAmount("1234.5678"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

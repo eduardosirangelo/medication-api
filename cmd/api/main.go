@@ -25,6 +25,7 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/middleware"
+	"github.com/eduardo-sirangelo/medication-api/internal/pricing"
 	"github.com/eduardo-sirangelo/medication-api/internal/seed"
 	"github.com/eduardo-sirangelo/medication-api/migrations"
 )
@@ -115,7 +116,10 @@ func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Liveness)
 	mux.Handle("GET /readyz", readiness)
-	medication.NewHandler(medication.NewService(repo), log).Register(mux)
+	meds := medication.NewService(repo)
+	medication.NewHandler(meds, log).Register(mux)
+	comparer := pricing.NewComparer(pricing.DefaultNetworks(), cfg.Pricing.Budget)
+	pricing.NewHandler(meds, comparer, log).Register(mux)
 
 	// RequestID first so every log line and problem body carries the ID;
 	// AccessLog outside Recover so recovered panics are logged as 500s.

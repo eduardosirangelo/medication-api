@@ -50,6 +50,7 @@ func TestLoad_Defaults(t *testing.T) {
 			StatementTimeout: 5 * time.Second,
 			MigrateOnStart:   false,
 		},
+		Pricing:  Pricing{Budget: 300 * time.Millisecond},
 		LogLevel: slog.LevelInfo,
 	}
 	if cfg != want {
@@ -74,6 +75,7 @@ func TestLoad_Overrides(t *testing.T) {
 		"DB_CONNECT_TIMEOUT":       "2s",
 		"DB_STATEMENT_TIMEOUT":     "500ms",
 		"MIGRATE_ON_START":         "true",
+		"PRICING_BUDGET":           "150ms",
 		"LOG_LEVEL":                "debug",
 	}))
 	if err != nil {
@@ -88,6 +90,9 @@ func TestLoad_Overrides(t *testing.T) {
 	if d.MaxConns != 20 || d.MinConns != 2 || d.MaxConnLifetime != time.Hour || d.MaxConnIdleTime != time.Minute ||
 		d.ConnectTimeout != 2*time.Second || d.StatementTimeout != 500*time.Millisecond || !d.MigrateOnStart {
 		t.Errorf("DB overrides not applied: %+v", d)
+	}
+	if cfg.Pricing.Budget != 150*time.Millisecond {
+		t.Errorf("Pricing.Budget = %v", cfg.Pricing.Budget)
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("LogLevel = %v", cfg.LogLevel)
@@ -123,6 +128,8 @@ func TestLoad_Invalid(t *testing.T) {
 		{"negative min conns", map[string]string{"DB_MIN_CONNS": "-1"}, []string{"DB_MIN_CONNS"}},
 		{"min above max", map[string]string{"DB_MIN_CONNS": "5", "DB_MAX_CONNS": "2"}, []string{"must not exceed"}},
 		{"bad bool", map[string]string{"MIGRATE_ON_START": "yes please"}, []string{"MIGRATE_ON_START"}},
+		{"zero pricing budget", map[string]string{"PRICING_BUDGET": "0s"}, []string{"PRICING_BUDGET"}},
+		{"budget not below write timeout", map[string]string{"PRICING_BUDGET": "2s", "HTTP_WRITE_TIMEOUT": "2s"}, []string{"must be below HTTP_WRITE_TIMEOUT"}},
 		{"bad log level", map[string]string{"LOG_LEVEL": "verbose"}, []string{"LOG_LEVEL"}},
 		{
 			"all errors reported together",

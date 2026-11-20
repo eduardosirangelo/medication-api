@@ -1,10 +1,9 @@
 ### Medication API: manual walkthrough
 #
 # Run top to bottom against `make run` (after `make db-up`, optionally `make seed`).
-# Written for the JetBrains HTTP Client (GoLand/IntelliJ editor or the ijhttp CLI).
-# Requests and @variables also run in VS Code REST Client, but the `> {% %}`
-# response handlers (captures and assertions) are JetBrains-only there:
-# copy id/ETag into @id/@etag by hand.
+# Targets the JetBrains HTTP Client (GoLand/IntelliJ editor or the ijhttp CLI):
+# the `> {% %}` handlers capture ids and ETags and assert status codes.
+# VS Code users: use `make smoke` (same flow, curl + jq) or curl directly.
 
 @baseUrl = http://localhost:8080
 # Placeholder until slice 9 adds API-key auth; the server ignores it for now.
@@ -139,6 +138,50 @@ X-API-Key: {{apiKey}}
         client.assert(response.body.id !== client.global.get("id"));
     });
 %}
+
+### Prices: the re-created entry has no NDC → 422 (networks quote per NDC)
+GET {{baseUrl}}/v1/medications/{{id}}/prices?quantity=30
+X-API-Key: {{apiKey}}
+
+> {% client.test("422", () => client.assert(response.status === 422)); %}
+
+### Create an entry with an NDC to price
+# The NDC must be unique among active entries, so it is derived from the clock.
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+  "name": "Walkthrough Lisinopril {{$timestamp}}",
+  "form": "tablet",
+  "dosage": {"value": 10, "unit": "mg"},
+  "ndc": "0{{$timestamp}}"
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201));
+    client.global.set("pricedId", response.body.id);
+%}
+
+### Prices: fan-out to three simulated networks under a 300ms budget
+# network-c is the cheapest but too slow, so it shows up as "timeout".
+GET {{baseUrl}}/v1/medications/{{pricedId}}/prices?quantity=30
+X-API-Key: {{apiKey}}
+
+> {%
+    client.test("200 with a best quote", () => {
+        client.assert(response.status === 200);
+        client.assert(response.body.simulated === true);
+        client.assert(response.body.best.price_cents === response.body.quotes[0].price_cents);
+        client.assert(response.body.unavailable.some(u => u.network === "network-c" && u.reason === "timeout"));
+    });
+%}
+
+### Prices: quantity outside 1..1000 → 400
+GET {{baseUrl}}/v1/medications/{{pricedId}}/prices?quantity=0
+X-API-Key: {{apiKey}}
+
+> {% client.test("400", () => client.assert(response.status === 400)); %}
 
 ### Error: same product again → 409
 POST {{baseUrl}}/v1/medications

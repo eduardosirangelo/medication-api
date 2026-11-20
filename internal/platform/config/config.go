@@ -19,6 +19,7 @@ type LookupFunc func(key string) (string, bool)
 type Config struct {
 	HTTP     HTTP
 	DB       DB
+	Pricing  Pricing
 	LogLevel slog.Level
 }
 
@@ -48,6 +49,13 @@ type DB struct {
 	// MigrateOnStart runs pending migrations before serving. Off by default:
 	// in production migrations run as a separate one-off step (`api migrate`).
 	MigrateOnStart bool
+}
+
+// Pricing holds settings for the price comparison fan-out.
+type Pricing struct {
+	// Budget caps the whole fan-out; networks that have not answered by then
+	// are reported as timed out instead of delaying the response.
+	Budget time.Duration
 }
 
 // Secret is a string that never prints its value (fmt, %+v, slog).
@@ -83,11 +91,20 @@ func Load(lookup LookupFunc) (Config, error) {
 			StatementTimeout: p.duration("DB_STATEMENT_TIMEOUT", 5*time.Second),
 			MigrateOnStart:   p.boolean("MIGRATE_ON_START", false),
 		},
+		Pricing: Pricing{
+			Budget: p.duration("PRICING_BUDGET", 300*time.Millisecond),
+		},
 		LogLevel: p.logLevel("LOG_LEVEL", slog.LevelInfo),
 	}
 
 	if cfg.DB.MinConns > cfg.DB.MaxConns {
 		p.errs = append(p.errs, fmt.Errorf("DB_MIN_CONNS (%d) must not exceed DB_MAX_CONNS (%d)", cfg.DB.MinConns, cfg.DB.MaxConns))
+	}
+
+	// Past the write timeout the client would get a dropped connection instead
+	// of the partial result the budget exists to deliver.
+	if cfg.Pricing.Budget >= cfg.HTTP.WriteTimeout {
+		p.errs = append(p.errs, fmt.Errorf("PRICING_BUDGET (%s) must be below HTTP_WRITE_TIMEOUT (%s)", cfg.Pricing.Budget, cfg.HTTP.WriteTimeout))
 	}
 
 	if err := errors.Join(p.errs...); err != nil {

@@ -72,6 +72,15 @@ test: ## Run unit tests with the race detector
 test-integration: ## Run integration tests (requires Docker)
 	go test -race -count=1 -tags=integration $(PKG)
 
+.PHONY: bench
+bench: ## Run benchmarks (no tests) with allocation counts
+	go test -run='^$$' -bench=. -benchmem $(PKG)
+
+FUZZTIME ?= 30s
+.PHONY: fuzz
+fuzz: ## Fuzz the decimal parser for FUZZTIME (default 30s)
+	go test -run='^$$' -fuzz=FuzzAmountRoundTrip -fuzztime=$(FUZZTIME) ./internal/medication
+
 .PHONY: lint
 lint: ## Run golangci-lint (pinned version)
 	$(LINT) run
