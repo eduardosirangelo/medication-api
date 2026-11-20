@@ -3,6 +3,7 @@
 //	api [serve]   run the HTTP server (default)
 //	api migrate   apply pending database migrations and exit
 //	api seed      insert the sample catalog (development and demos only)
+//	api healthcheck  exit 0 if this host's API reports ready (container probes)
 package main
 
 import (
@@ -15,11 +16,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
 	"github.com/eduardo-sirangelo/medication-api/internal/medication"
+	"github.com/eduardo-sirangelo/medication-api/internal/platform/admin"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/auth"
+	"github.com/eduardo-sirangelo/medication-api/internal/platform/buildinfo"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/db"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/health"
@@ -31,14 +35,14 @@ import (
 	"github.com/eduardo-sirangelo/medication-api/migrations"
 )
 
-const usage = "usage: api [serve|migrate|seed]"
+const usage = "usage: api [serve|migrate|seed|healthcheck]"
 
 // Must stay below the orchestrator's probe timeout (Kubernetes defaults to
 // 1s); a pooled ping normally takes well under 10ms.
 const readinessTimeout = 800 * time.Millisecond
 
-// Probes run without credentials; /version (slice 10) carries no data worth
-// protecting and helps confirm a deploy.
+// Probes run without credentials; /version carries no data worth protecting
+// and helps confirm a deploy.
 var publicPaths = []string{"/healthz", "/readyz", "/version"}
 
 // os.Exit skips deferred calls, so it lives here and nowhere else.
@@ -53,6 +57,10 @@ func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io
 	cmd, err := parseCommand(args)
 	if err != nil {
 		return err
+	}
+	// Before config.Load: a probe must not depend on settings it never uses.
+	if cmd == "healthcheck" {
+		return healthcheck(ctx, lookup)
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -82,7 +90,7 @@ func parseCommand(args []string) (string, error) {
 	switch {
 	case len(args) == 0:
 		return "serve", nil
-	case len(args) == 1 && (args[0] == "serve" || args[0] == "migrate" || args[0] == "seed"):
+	case len(args) == 1 && slices.Contains([]string{"serve", "migrate", "seed", "healthcheck"}, args[0]):
 		return args[0], nil
 	default:
 		return "", errors.New(usage)
@@ -90,6 +98,9 @@ func parseCommand(args []string) (string, error) {
 }
 
 func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+	info := buildinfo.Read()
+	log.Info("starting", slog.Any("build", info))
+
 	if cfg.DB.MigrateOnStart {
 		if err := migrate(ctx, cfg.DB, log); err != nil {
 			return err
@@ -103,13 +114,19 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	defer pool.Close() // after Serve returns, i.e. once in-flight requests are done
 
 	readiness := health.NewReadiness(pool, readinessTimeout, log)
-	handler := newHandler(cfg, log, readiness, medication.NewPostgresRepository(pool))
+	handler := newHandler(cfg, log, readiness, medication.NewPostgresRepository(pool), info)
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.HTTP.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.HTTP.Addr, err)
 	}
+	stopAdmin, err := startAdmin(ctx, cfg.Admin, log)
+	if err != nil {
+		return err
+	}
+	defer stopAdmin()
+
 	return httpx.Serve(ctx, httpx.NewServer(cfg.HTTP, handler, log), ln, httpx.Shutdown{
 		Timeout:    cfg.HTTP.ShutdownTimeout,
 		DrainDelay: cfg.HTTP.DrainDelay,
@@ -117,10 +134,62 @@ func serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}, log)
 }
 
-func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness, repo medication.Repository) http.Handler {
+// startAdmin listens before returning, so a taken port fails startup instead
+// of surfacing later in a goroutine. The returned func stops the listener and
+// waits for it, so it never outlives the API server.
+func startAdmin(ctx context.Context, cfg config.Admin, log *slog.Logger) (stop func(), err error) {
+	if cfg.Addr == "" {
+		return func() {}, nil
+	}
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", cfg.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s (ADMIN_ADDR): %w", cfg.Addr, err)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := admin.Serve(ctx, ln, log); err != nil {
+			log.Error("admin server stopped", slog.Any("error", err))
+		}
+	}()
+	return func() { cancel(); <-done }, nil
+}
+
+// healthcheck asks this host's API for readiness. Distroless images have no
+// curl, so the container probe runs the binary itself.
+func healthcheck(ctx context.Context, lookup config.LookupFunc) error {
+	addr, ok := lookup("HTTP_ADDR")
+	if !ok || addr == "" {
+		addr = ":8080"
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("HTTP_ADDR=%q: %w", addr, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort("127.0.0.1", port)+"/readyz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("readyz returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness, repo medication.Repository, info buildinfo.Info) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Liveness)
 	mux.Handle("GET /readyz", readiness)
+	mux.Handle("GET /version", buildinfo.Handler(info))
 	meds := medication.NewService(repo)
 	medication.NewHandler(meds, log).Register(mux)
 	comparer := pricing.NewComparer(pricing.DefaultNetworks(), cfg.Pricing.Budget)

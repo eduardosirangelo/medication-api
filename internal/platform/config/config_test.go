@@ -77,6 +77,7 @@ func TestLoad_Overrides(t *testing.T) {
 		"DB_STATEMENT_TIMEOUT":     "500ms",
 		"MIGRATE_ON_START":         "true",
 		"PRICING_BUDGET":           "150ms",
+		"ADMIN_ADDR":               "127.0.0.1:6060",
 		"LOG_LEVEL":                "debug",
 	}))
 	if err != nil {
@@ -91,6 +92,9 @@ func TestLoad_Overrides(t *testing.T) {
 	if d.MaxConns != 20 || d.MinConns != 2 || d.MaxConnLifetime != time.Hour || d.MaxConnIdleTime != time.Minute ||
 		d.ConnectTimeout != 2*time.Second || d.StatementTimeout != 500*time.Millisecond || !d.MigrateOnStart {
 		t.Errorf("DB overrides not applied: %+v", d)
+	}
+	if cfg.Admin.Addr != "127.0.0.1:6060" {
+		t.Errorf("Admin.Addr = %q", cfg.Admin.Addr)
 	}
 	if cfg.Pricing.Budget != 150*time.Millisecond {
 		t.Errorf("Pricing.Budget = %v", cfg.Pricing.Budget)
@@ -136,6 +140,8 @@ func TestLoad_Invalid(t *testing.T) {
 		{"short api key", map[string]string{"API_KEYS": "app:short"}, []string{`key "app": must be at least 16`}},
 		{"duplicate api key id", map[string]string{"API_KEYS": "app:0123456789abcdef,app:fedcba9876543210"}, []string{"duplicate id"}},
 		{"reused api key secret", map[string]string{"API_KEYS": "a:0123456789abcdef,b:0123456789abcdef"}, []string{`key "b": reuses`}},
+		{"bad admin addr", map[string]string{"ADMIN_ADDR": "6060"}, []string{"ADMIN_ADDR"}},
+		{"admin on the API port", map[string]string{"ADMIN_ADDR": ":8080"}, []string{"ADMIN_ADDR must differ"}},
 		{"bad log level", map[string]string{"LOG_LEVEL": "verbose"}, []string{"LOG_LEVEL"}},
 		{
 			"all errors reported together",

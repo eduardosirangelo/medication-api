@@ -20,6 +20,11 @@ GET {{baseUrl}}/readyz
 
 > {% client.test("200", () => client.assert(response.status === 200)); %}
 
+### Build info (public): version, commit, Go version
+GET {{baseUrl}}/version
+
+> {% client.test("200", () => client.assert(response.status === 200 && response.body.go_version !== undefined)); %}
+
 ### Auth: no key → 401 with a WWW-Authenticate challenge
 GET {{baseUrl}}/v1/medications
 

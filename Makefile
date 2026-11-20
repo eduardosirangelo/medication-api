@@ -5,6 +5,9 @@ BINARY        := bin/api
 PKG           := ./...
 LINT_VERSION  := v2.15.0
 LINT          := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(LINT_VERSION)
+VULN_VERSION  := v1.1.4
+VULN          := go run golang.org/x/vuln/cmd/govulncheck@$(VULN_VERSION)
+IMAGE         := medication-api:local
 
 # Load .env (if present) into the environment of recipes that run the app.
 ifneq (,$(wildcard .env))
@@ -28,6 +31,29 @@ dev: env-check ## One command for local dev: db-up, migrate, seed, then run the 
 	./$(BINARY) migrate
 	./$(BINARY) seed
 	./$(BINARY)
+
+# Needs only Docker: images are built in the container, no local Go or .env.
+# The port check matters: a local API (make dev) listening on [::]:8080 does
+# not stop Docker binding 127.0.0.1:8080, and `localhost` then reaches the
+# local process over IPv6 instead of the container, silently.
+.PHONY: up
+up: ## Run the full stack in Docker (db, migrate, seed, api on :8080) and wait until healthy
+	@if curl -s -o /dev/null --max-time 1 http://localhost:8080/healthz && [ -z "$$(docker compose ps -q api)" ]; then \
+		echo "error: something already serves localhost:8080 (make dev or make run?). Stop it first."; exit 1; fi
+	docker compose up -d --build --wait
+	@echo "API ready on http://localhost:8080 (key: local-dev-key-change-me). Try: make smoke"
+
+.PHONY: down
+down: ## Stop and remove the Docker stack (keeps the data volume)
+	docker compose down
+
+.PHONY: logs
+logs: ## Follow the API container logs
+	docker compose logs -f api
+
+.PHONY: docker-build
+docker-build: ## Build the runtime image (medication-api:local)
+	docker build -t $(IMAGE) .
 
 .PHONY: stop
 stop: ## Stop the local containers (keeps the data volume; `make db-up` resumes)
@@ -58,11 +84,11 @@ db-up: ## Start local PostgreSQL and wait until healthy
 	docker compose up -d --wait db
 
 .PHONY: db-down
-db-down: ## Stop local PostgreSQL (keeps data)
+db-down: ## Remove the local containers (keeps data; same as `make down`)
 	docker compose down
 
 .PHONY: db-reset
-db-reset: ## Stop local PostgreSQL and delete its data volume
+db-reset: ## Remove the local containers and delete the data volume
 	docker compose down -v
 
 .PHONY: db-psql
@@ -102,11 +128,13 @@ fuzz: ## Fuzz the decimal parser for FUZZTIME (default 30s)
 lint: ## Run golangci-lint (pinned version)
 	$(LINT) run
 
+.PHONY: vuln
+vuln: ## Scan dependencies and stdlib for known vulnerabilities (govulncheck, pinned)
+	$(VULN) ./...
+
 .PHONY: tidy
 tidy: ## Tidy go.mod/go.sum
 	go mod tidy
 
 .PHONY: check
-check: fmt-check vet lint test ## Everything CI runs (minus integration)
-
-# TODO(slice-10): docker-build target.
+check: fmt-check vet lint vuln test ## Everything CI runs (minus integration)

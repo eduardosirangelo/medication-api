@@ -23,6 +23,7 @@ type Config struct {
 	DB       DB
 	Pricing  Pricing
 	Auth     Auth
+	Admin    Admin
 	LogLevel slog.Level
 }
 
@@ -73,6 +74,13 @@ type APIKey struct {
 	Key Secret
 }
 
+// Admin configures the operational listener (pprof). It is separate from
+// the API so profiling is never reachable through the public port.
+type Admin struct {
+	// Addr is empty by default, which disables the listener.
+	Addr string
+}
+
 // Secret is a string that never prints its value (fmt, %+v, slog).
 type Secret string
 
@@ -110,11 +118,16 @@ func Load(lookup LookupFunc) (Config, error) {
 			Budget: p.duration("PRICING_BUDGET", 300*time.Millisecond),
 		},
 		Auth:     Auth{Keys: p.apiKeys("API_KEYS")},
+		Admin:    Admin{Addr: p.addr("ADMIN_ADDR", "")},
 		LogLevel: p.logLevel("LOG_LEVEL", slog.LevelInfo),
 	}
 
 	if cfg.DB.MinConns > cfg.DB.MaxConns {
 		p.errs = append(p.errs, fmt.Errorf("DB_MIN_CONNS (%d) must not exceed DB_MAX_CONNS (%d)", cfg.DB.MinConns, cfg.DB.MaxConns))
+	}
+
+	if cfg.Admin.Addr != "" && cfg.Admin.Addr == cfg.HTTP.Addr {
+		p.errs = append(p.errs, fmt.Errorf("ADMIN_ADDR must differ from HTTP_ADDR (%s)", cfg.HTTP.Addr))
 	}
 
 	// Past the write timeout the client would get a dropped connection instead

@@ -1,0 +1,14 @@
+# .git stays in the context on purpose: `go build` reads it to stamp the
+# commit into the binary (served by /version). It never reaches the final image.
+.claude/
+.idea/
+.vscode/
+bin/
+dist/
+.env
+.env.*
+!.env.example
+ESTUDO.md
+*.test
+*.out
+coverage.*

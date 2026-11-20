@@ -1,6 +1,14 @@
-# Local development stack. Credentials here are for local use only.
-# TODO(slice-10): add `migrate` (one-off) and `api` services built from the Dockerfile.
+# Local stack. Credentials and the API key here are for local use only.
+#   make db-up   just the database (for `make dev` / `go run`)
+#   make up      everything: db → migrate → seed → api on 127.0.0.1:8080
 name: medication-api
+
+x-app: &app
+  build: .
+  image: medication-api:local
+  environment: &app-env
+    DATABASE_URL: postgres://medication:medication@db:5432/medication?sslmode=disable
+    LOG_LEVEL: info
 
 services:
   db:
@@ -19,6 +27,42 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # One-off steps, mirroring production: migrations run before the API starts,
+  # never from it. Seeding is demo data and exists only in this local stack.
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    depends_on:
+      db: { condition: service_healthy }
+
+  seed:
+    <<: *app
+    command: ["seed"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  api:
+    <<: *app
+    command: ["serve"]
+    environment:
+      <<: *app-env
+      API_KEYS: local-dev:local-dev-key-change-me # same key as .env.example
+      SHUTDOWN_DRAIN_DELAY: 0s # no load balancer to drain locally
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      seed: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "/api", "healthcheck"] # distroless has no curl
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    # Docker's default 10s before SIGKILL is shorter than SHUTDOWN_TIMEOUT (20s),
+    # which would cut graceful shutdown off mid-flight.
+    stop_grace_period: 25s
+    restart: unless-stopped
 
 volumes:
   pgdata:

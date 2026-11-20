@@ -47,6 +47,7 @@ NDC=$(printf '%011d' $(( ($(date +%s) * 1000 + $$ % 1000) % 100000000000 )))
 
 as_key "" request GET /healthz;                         expect 200 "liveness (no key)"
 as_key "" request GET /readyz;                          expect 200 "readiness (no key)"
+as_key "" request GET /version;                         expect 200 "version (no key)"
 as_key "" request GET /v1/medications;                  expect 401 "no key"
 [[ $(header WWW-Authenticate) == ApiKey* ]] || { echo "FAIL  401 without WWW-Authenticate"; failures=$((failures + 1)); }
 as_key wrong-key-0123456789 request GET /v1/medications; expect 401 "wrong key"
