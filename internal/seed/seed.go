@@ -5,17 +5,18 @@ package seed
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/eduardo-sirangelo/medication-api/internal/medication"
 )
 
-// Creator is the part of medication.Service the seeder needs. Going through
-// the service (not SQL) means seed data passes the same validation as API input.
-type Creator interface {
-	Create(ctx context.Context, in medication.Input) (medication.Medication, error)
+// Store is what the seeder writes to; medication.PostgresRepository
+// implements it. It is not medication.Service on purpose: Service.Create
+// reports an existing row as a failed INSERT, which PostgreSQL logs as an
+// ERROR, and a re-run seed would log one per entry.
+type Store interface {
+	CreateIfAbsent(ctx context.Context, m medication.Medication) (medication.Medication, bool, error)
 }
 
 // Result counts what a run did, so a second run visibly inserts nothing.
@@ -24,25 +25,43 @@ type Result struct {
 	Skipped  int
 }
 
-// Run inserts every entry that does not already exist. Existence is decided by
-// the unique indexes, not by a lookup first, so concurrent runs cannot
-// duplicate entries either.
-func Run(ctx context.Context, svc Creator, entries []medication.Input, log *slog.Logger) (Result, error) {
+// Run validates every entry exactly like API input (medication.NewSpec) and
+// inserts the ones that do not exist yet. Existence is decided by the unique
+// indexes inside the INSERT, not by a lookup first, so concurrent runs cannot
+// duplicate entries either. An invalid entry is a bug in the catalog and stops
+// the run instead of being skipped.
+func Run(ctx context.Context, store Store, entries []medication.Input, log *slog.Logger) (Result, error) {
 	var res Result
 	for _, in := range entries {
-		m, err := svc.Create(ctx, in)
-		switch {
-		case err == nil:
-			res.Inserted++
-			log.InfoContext(ctx, "seeded", "id", m.ID, "name", m.Name, "dosage", m.Dosage.String())
-		case errors.Is(err, medication.ErrDuplicate), errors.Is(err, medication.ErrDuplicateNDC):
-			res.Skipped++
-			log.DebugContext(ctx, "seed entry exists", "name", in.Name, "reason", err)
-		default:
+		m, err := newMedication(in)
+		if err != nil {
 			return res, fmt.Errorf("seed %q: %w", in.Name, err)
+		}
+		created, inserted, err := store.CreateIfAbsent(ctx, m)
+		switch {
+		case err != nil:
+			return res, fmt.Errorf("seed %q: %w", in.Name, err)
+		case inserted:
+			res.Inserted++
+			log.InfoContext(ctx, "seeded", "id", created.ID, "name", created.Name, "dosage", created.Dosage.String())
+		default:
+			res.Skipped++
+			log.DebugContext(ctx, "seed entry exists", "name", m.Name, "dosage", m.Dosage.String())
 		}
 	}
 	return res, nil
+}
+
+func newMedication(in medication.Input) (medication.Medication, error) {
+	spec, err := medication.NewSpec(in)
+	if err != nil {
+		return medication.Medication{}, err
+	}
+	id, err := medication.NewID()
+	if err != nil {
+		return medication.Medication{}, fmt.Errorf("generate id: %w", err)
+	}
+	return medication.Medication{ID: id, Spec: spec}, nil
 }
 
 // NDCs and RxCUIs below are format-valid illustrations, not looked up in the

@@ -684,3 +684,52 @@ func TestPostgres_DeleteRacingUpdate(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgres_CreateIfAbsent(t *testing.T) {
+	repo := freshRepo(t)
+	ctx := t.Context()
+	amox := Input{Name: "Amoxicillin", Form: "capsule", Dosage: DosageInput{Value: "500", Unit: "mg"}, NDC: "65862-0017-01"}
+
+	first, inserted, err := repo.CreateIfAbsent(ctx, newMed(t, amox))
+	if err != nil || !inserted || first.Version != 1 {
+		t.Fatalf("new row: %+v, inserted=%v, err=%v", first, inserted, err)
+	}
+
+	t.Run("same identity is skipped without an error", func(t *testing.T) {
+		if _, inserted, err := repo.CreateIfAbsent(ctx, newMed(t, amox)); err != nil || inserted {
+			t.Fatalf("inserted=%v, err=%v", inserted, err)
+		}
+	})
+	t.Run("same NDC on another product is skipped too", func(t *testing.T) {
+		other := Input{Name: "Other", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}, NDC: amox.NDC}
+		if _, inserted, err := repo.CreateIfAbsent(ctx, newMed(t, other)); err != nil || inserted {
+			t.Fatalf("inserted=%v, err=%v", inserted, err)
+		}
+	})
+	t.Run("Create still reports the duplicate for the API", func(t *testing.T) {
+		if _, err := repo.Create(ctx, newMed(t, amox)); !errors.Is(err, ErrDuplicate) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("a soft-deleted row does not block it", func(t *testing.T) {
+		if err := repo.Delete(ctx, first.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		again, inserted, err := repo.CreateIfAbsent(ctx, newMed(t, amox))
+		if err != nil || !inserted || again.ID == first.ID {
+			t.Fatalf("%+v, inserted=%v, err=%v", again, inserted, err)
+		}
+	})
+	t.Run("CHECK violations are still errors", func(t *testing.T) {
+		bad := newMed(t, Input{Name: "Bad", Form: "tablet", Dosage: DosageInput{Value: "1", Unit: "mg"}})
+		bad.Form = "gummy" // bypasses domain validation to reach the CHECK constraint
+		if _, _, err := repo.CreateIfAbsent(ctx, bad); err == nil {
+			t.Fatal("want CHECK violation")
+		}
+	})
+
+	var active int
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM medications WHERE deleted_at IS NULL").Scan(&active); err != nil || active != 1 {
+		t.Fatalf("active rows = %d, err = %v", active, err)
+	}
+}

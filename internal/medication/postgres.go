@@ -46,21 +46,44 @@ var _ Repository = (*PostgresRepository)(nil)
 const selectColumns = `id, name, dosage_value::text, dosage_unit, dosage_per_value::text,
 	dosage_per_unit, form, ndc, rxcui, route, version, created_at, updated_at`
 
-func (r *PostgresRepository) Create(ctx context.Context, m Medication) (Medication, error) {
+const insertMedication = `
+	INSERT INTO medications (id, name, dosage_value, dosage_unit, dosage_per_value, dosage_per_unit,
+	                         form, ndc, rxcui, route)
+	VALUES ($1, $2, $3::numeric, $4, $5::numeric, $6, $7, $8, $9, $10)`
+
+func insertArgs(m Medication) []any {
 	perValue, perUnit := perArgs(m.Dosage)
-	row := r.pool.QueryRow(ctx, `
-		INSERT INTO medications (id, name, dosage_value, dosage_unit, dosage_per_value, dosage_per_unit,
-		                         form, ndc, rxcui, route)
-		VALUES ($1, $2, $3::numeric, $4, $5::numeric, $6, $7, $8, $9, $10)
-		RETURNING `+selectColumns,
+	return []any{
 		m.ID, m.Name, m.Dosage.Value.String(), string(m.Dosage.Unit), perValue, perUnit,
 		string(m.Form), nullable(m.NDC), nullable(m.RxCUI), nullable(m.Route),
-	)
+	}
+}
+
+func (r *PostgresRepository) Create(ctx context.Context, m Medication) (Medication, error) {
+	row := r.pool.QueryRow(ctx, insertMedication+` RETURNING `+selectColumns, insertArgs(m)...)
 	created, err := scanMedication(row)
 	if err != nil {
 		return Medication{}, fmt.Errorf("insert medication: %w", translateUniqueViolation(err))
 	}
 	return created, nil
+}
+
+// CreateIfAbsent inserts m unless an active row already has its identity or
+// NDC, and reports whether it did. Only the seeder uses it: an API client
+// needs the 409 that Create returns, while a re-run seed would otherwise make
+// PostgreSQL log one unique-violation ERROR per existing row. With no
+// conflict target, DO NOTHING covers every unique index, including the
+// partial ones that ignore deleted rows.
+func (r *PostgresRepository) CreateIfAbsent(ctx context.Context, m Medication) (Medication, bool, error) {
+	row := r.pool.QueryRow(ctx, insertMedication+` ON CONFLICT DO NOTHING RETURNING `+selectColumns, insertArgs(m)...)
+	created, err := scanMedication(row)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return Medication{}, false, nil
+	case err != nil:
+		return Medication{}, false, fmt.Errorf("insert medication: %w", err)
+	}
+	return created, true, nil
 }
 
 // The version check lives in the UPDATE's WHERE clause so checking and

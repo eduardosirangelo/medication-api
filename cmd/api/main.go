@@ -231,7 +231,7 @@ func seedCatalog(ctx context.Context, cfg config.DB, log *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	res, err := seed.Run(ctx, medication.NewService(medication.NewPostgresRepository(pool)), seed.Catalog, log)
+	res, err := seed.Run(ctx, medication.NewPostgresRepository(pool), seed.Catalog, log)
 	log.InfoContext(ctx, "seed finished", "inserted", res.Inserted, "skipped", res.Skipped)
 	return err
 }

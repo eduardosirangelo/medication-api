@@ -7,6 +7,7 @@ package dbtest
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -47,6 +48,18 @@ func Start(ctx context.Context) (*Postgres, error) {
 }
 
 func (p *Postgres) Terminate() error { return testcontainers.TerminateContainer(p.container) }
+
+// Logs returns the server log so far, for tests that assert what PostgreSQL
+// itself reported (e.g. that a statement raised no ERROR).
+func (p *Postgres) Logs(ctx context.Context) (string, error) {
+	rc, err := p.container.Logs(ctx)
+	if err != nil {
+		return "", fmt.Errorf("container logs: %w", err)
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	return string(b), err
+}
 
 func (p *Postgres) Config() config.DB {
 	return config.DB{
