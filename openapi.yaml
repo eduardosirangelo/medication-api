@@ -1,0 +1,502 @@
+openapi: 3.1.0
+info:
+  title: Medication API
+  version: 1.0.0
+  summary: Medication catalog with optimistic concurrency and a simulated price comparison.
+  description: |
+    A catalog of medications at clinical-drug level: one entry per name + strength + dose form,
+    the same granularity as an RxNorm clinical drug. `ndc` is one representative NDC for the
+    entry, not every package on the market.
+
+    This is a catalog, not patient data. `dosage` is the product strength ("500 mg"), not a
+    patient's directions. Prescriptions would be a separate resource with PHI in scope.
+
+    Errors use RFC 9457 `application/problem+json`, extended with `request_id` and, for
+    validation errors, an `errors` array that names every invalid field.
+
+    Every endpoint requires an `X-API-Key` header except `/healthz`, `/readyz` and `/version`.
+servers:
+  - url: http://localhost:8080
+    description: Local (make up or make dev)
+security:
+  - apiKey: []
+tags:
+  - name: medications
+  - name: pricing
+  - name: operations
+
+paths:
+  /v1/medications:
+    post:
+      tags: [medications]
+      operationId: createMedication
+      summary: Create a medication
+      description: |
+        Name, dosage and form identify an entry; a second active entry with the same identity
+        (name compared case-insensitively) or the same NDC is a 409. Inputs are normalized:
+        whitespace trimmed, units canonicalized (`MG` → `mg`, `ug` → `mcg`), NDC stored as 11 digits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MedicationInput' }
+            examples:
+              tablet:
+                value: { name: Paracetamol, form: tablet, dosage: { value: 500, unit: mg } }
+              liquid:
+                value:
+                  name: Amoxicillin
+                  form: liquid
+                  dosage: { value: 250, unit: mg, per_value: 5, per_unit: mL }
+                  ndc: 0093-4155-73
+                  route: oral
+      responses:
+        '201':
+          description: Created.
+          headers:
+            Location:
+              description: URL of the new medication.
+              schema: { type: string, example: /v1/medications/019a9c3e-7a10-7000-8000-000000000001 }
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Medication' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [medications]
+      operationId: listMedications
+      summary: List medications
+      description: |
+        Newest first, paginated with an opaque keyset cursor. The cursor is bound to the filters
+        it was issued for; reusing it with different filters is a 400. Unknown or repeated query
+        parameters are a 400 rather than being ignored.
+      parameters:
+        - name: name
+          in: query
+          description: Case-insensitive substring of the name.
+          schema: { type: string, maxLength: 200 }
+        - name: form
+          in: query
+          schema: { $ref: '#/components/schemas/Form' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page, with the same filters. Empty means the first page.
+          schema: { type: string }
+      responses:
+        '200':
+          description: A page of medications.
+          headers:
+            Link:
+              description: RFC 8288 link to the next page (`rel="next"`), present only when there is one.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MedicationList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/medications/{id}:
+    parameters:
+      - $ref: '#/components/parameters/MedicationId'
+    get:
+      tags: [medications]
+      operationId: getMedication
+      summary: Get a medication
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: An ETag from a previous response; when it is still current the reply is 304 with no body.
+          schema: { type: string, example: '"3"' }
+      responses:
+        '200':
+          description: The medication.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Medication' }
+        '304':
+          description: Not modified since the ETag given in If-None-Match.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      tags: [medications]
+      operationId: replaceMedication
+      summary: Replace a medication
+      description: |
+        Full replacement, guarded by optimistic concurrency: `If-Match` must carry the ETag of
+        the current version. The check and the write are one atomic UPDATE, so of two clients
+        holding the same ETag exactly one succeeds.
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag of the version being replaced. `*` is not accepted (428).
+          schema: { type: string, example: '"1"' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MedicationInput' }
+      responses:
+        '200':
+          description: Replaced; the version was incremented.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Medication' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [medications]
+      operationId: deleteMedication
+      summary: Delete a medication (soft delete)
+      description: |
+        The row is kept for audit and disappears from every read. Its identity and NDC can be
+        reused by a new entry, which gets a new ID. Deleting again is a 404.
+      parameters:
+        - name: If-Match
+          in: header
+          description: Optional. When present, the delete happens only if the version still matches (412 otherwise). Absent or `*` deletes unconditionally.
+          schema: { type: string, example: '"2"' }
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /v1/medications/{id}/prices:
+    parameters:
+      - $ref: '#/components/parameters/MedicationId'
+    get:
+      tags: [pricing]
+      operationId: comparePrices
+      summary: Compare simulated cash prices across pricing networks
+      description: |
+        **Prices are simulated.** No real pricing source is contacted. Each network's price is
+        derived deterministically from the NDC and quantity.
+
+        The request fans out to every network at once under a total latency budget
+        (`PRICING_BUDGET`, default 300 ms). Networks that miss the budget or fail are listed in
+        `unavailable`; the cheapest quote that arrived wins. With the default settings the
+        cheapest network is too slow and always shows up as `timeout`, by design.
+      parameters:
+        - name: quantity
+          in: query
+          required: true
+          description: Dispensing units (tablets, capsules, mL).
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+      responses:
+        '200':
+          description: The best quote and every network's outcome.
+          headers:
+            Cache-Control:
+              description: Always `no-store`; quotes are valid only at the moment they are made.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PriceComparison' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: The medication has no NDC, and prices are quoted per NDC.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: No network returned a quote within the budget.
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 1 }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /healthz:
+    get:
+      tags: [operations]
+      operationId: liveness
+      summary: Liveness probe
+      description: The process is up. Never checks dependencies, so a database outage does not restart the pod.
+      security: []
+      responses:
+        '200':
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, const: ok } }
+  /readyz:
+    get:
+      tags: [operations]
+      operationId: readiness
+      summary: Readiness probe
+      description: Ready for traffic. Fails while the database is unreachable and during graceful shutdown, so load balancers stop routing first.
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Draining or the database is down.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+  /version:
+    get:
+      tags: [operations]
+      operationId: version
+      summary: Build information
+      description: Read from the metadata the Go toolchain embeds at build time.
+      security: []
+      responses:
+        '200':
+          description: The running build.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Version' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Static key configured in `API_KEYS` (`id:key` pairs). Logs record the key's ID, never the key.
+
+  parameters:
+    MedicationId:
+      name: id
+      in: path
+      required: true
+      description: UUIDv7. A malformed ID is a 404, like an unknown one.
+      schema: { type: string, format: uuid }
+
+  headers:
+    ETag:
+      description: Strong ETag of the medication's version, e.g. `"3"`.
+      schema: { type: string, example: '"3"' }
+
+  schemas:
+    Form:
+      type: string
+      enum: [tablet, capsule, liquid]
+      description: Case-insensitive on input; returned lowercase.
+    Unit:
+      type: string
+      enum: [mg, mcg, g, mL, IU, '%']
+      description: Case-insensitive on input; `ug` and `µg` are accepted for `mcg`.
+    Route:
+      type: string
+      enum: [oral, sublingual, topical, transdermal, inhalation, nasal, ophthalmic, otic, rectal, vaginal, intravenous, intramuscular, subcutaneous]
+    Amount:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 99999999.9999
+      description: Exact decimal with at most 4 fractional digits (stored as NUMERIC(12,4), never a float).
+    DosageInput:
+      type: object
+      required: [value, unit]
+      additionalProperties: false
+      description: Product strength. `per_value` and `per_unit` go together and express a concentration (250 mg per 5 mL); `per_unit` must differ from `unit` and cannot be combined with `%`.
+      properties:
+        value: { $ref: '#/components/schemas/Amount' }
+        unit: { $ref: '#/components/schemas/Unit' }
+        per_value: { $ref: '#/components/schemas/Amount' }
+        per_unit: { $ref: '#/components/schemas/Unit' }
+    MedicationInput:
+      type: object
+      required: [name, form, dosage]
+      additionalProperties: false
+      description: Unknown fields are rejected with 400. Every invalid field is reported at once in a 422.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        form: { $ref: '#/components/schemas/Form' }
+        dosage: { $ref: '#/components/schemas/DosageInput' }
+        ndc:
+          type: string
+          description: 10 digits hyphenated 4-4-2, 5-3-2 or 5-4-1, or 11 digits (5-4-2 or plain). Unique among active entries.
+          example: 0093-4155-73
+        rxcui: { type: string, pattern: '^[0-9]{1,10}$', description: RxNorm concept ID. }
+        route: { $ref: '#/components/schemas/Route' }
+    Dosage:
+      type: object
+      required: [value, unit]
+      properties:
+        value: { type: number, description: 'Exact decimal written canonically: no trailing zeros, at most 4 fractional digits.', example: 250 }
+        unit: { $ref: '#/components/schemas/Unit' }
+        per_value: { type: number, example: 5 }
+        per_unit: { $ref: '#/components/schemas/Unit' }
+    Medication:
+      type: object
+      required: [id, name, dosage, form, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        dosage: { $ref: '#/components/schemas/Dosage' }
+        form: { $ref: '#/components/schemas/Form' }
+        ndc: { type: string, description: 11-digit NDC in 5-4-2 hyphenated form., example: 00093-4155-73 }
+        rxcui: { type: string }
+        route: { $ref: '#/components/schemas/Route' }
+        version: { type: integer, minimum: 1, description: Incremented on every change; the ETag is this value quoted. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MedicationList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Medication' }
+        next_cursor:
+          type: [string, 'null']
+          description: Pass as `cursor` to get the next page; null on the last page.
+    Quote:
+      type: object
+      required: [network, price_cents, latency_ms]
+      properties:
+        network: { type: string, example: network-b }
+        price_cents: { type: integer, format: int64, description: Total for the quantity, in cents. }
+        latency_ms: { type: integer }
+    PriceComparison:
+      type: object
+      required: [medication_id, ndc, quantity, currency, best, quotes, unavailable, simulated]
+      properties:
+        medication_id: { type: string, format: uuid }
+        ndc: { type: string, example: 00093-4155-73 }
+        quantity: { type: integer }
+        currency: { type: string, const: USD }
+        best: { $ref: '#/components/schemas/Quote' }
+        quotes:
+          type: array
+          description: Cheapest first.
+          items: { $ref: '#/components/schemas/Quote' }
+        unavailable:
+          type: array
+          description: Networks without a quote, in configuration order. Empty array, never null.
+          items:
+            type: object
+            required: [network, reason]
+            properties:
+              network: { type: string }
+              reason: { type: string, enum: [timeout, error] }
+        simulated: { type: boolean, const: true }
+    Readiness:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, draining, unavailable] }
+        checks:
+          type: object
+          properties:
+            database: { type: string, enum: [up, down] }
+    Version:
+      type: object
+      required: [version, modified, go_version]
+      properties:
+        version: { type: string, example: v0.0.0-20261120211409-500cb84a506e }
+        commit: { type: string }
+        commit_time: { type: string, format: date-time }
+        modified: { type: boolean, description: Built from a tree with uncommitted changes. }
+        go_version: { type: string, example: go1.27.4 }
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required: [type, title, status]
+      properties:
+        type: { type: string, example: about:blank }
+        title: { type: string, example: Unprocessable Entity }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string, description: The request path. }
+        request_id: { type: string, description: Same value as the X-Request-ID response header and the server logs. }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string, example: dosage.per_unit }
+              message: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed JSON, unknown fields, or invalid query parameters (the `errors` array names them).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing or invalid API key.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, example: 'ApiKey realm="medication-api", header="X-API-Key"' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: No active medication with this ID.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Another active medication has the same name + dosage + form, or the same NDC.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: If-Match does not name the current version; fetch the medication again.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionRequired:
+      description: If-Match is missing (or `*`); replacing requires the current ETag.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: Body larger than HTTP_MAX_BODY_BYTES (64 KiB by default).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnsupportedMediaType:
+      description: Content-Type is not application/json.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationFailed:
+      description: Well-formed JSON with invalid content; `errors` lists every invalid field.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InternalError:
+      description: Unexpected error; details are in the server log under `request_id`, never in the response.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

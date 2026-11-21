@@ -186,14 +186,7 @@ func healthcheck(ctx context.Context, lookup config.LookupFunc) error {
 }
 
 func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness, repo medication.Repository, info buildinfo.Info) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", health.Liveness)
-	mux.Handle("GET /readyz", readiness)
-	mux.Handle("GET /version", buildinfo.Handler(info))
-	meds := medication.NewService(repo)
-	medication.NewHandler(meds, log).Register(mux)
-	comparer := pricing.NewComparer(pricing.DefaultNetworks(), cfg.Pricing.Budget)
-	pricing.NewHandler(meds, comparer, log).Register(mux)
+	mux := newMux(cfg, log, readiness, repo, info)
 
 	keys := auth.NewKeyring(cfg.Auth.Keys)
 	if keys.Len() == 0 {
@@ -210,6 +203,20 @@ func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness
 		auth.Require(keys, publicPaths...),
 		middleware.MaxBodyBytes(cfg.HTTP.MaxBodyBytes),
 	)
+}
+
+// Every route lives here, so the openapi.yaml consistency test sees exactly
+// what production serves.
+func newMux(cfg config.Config, log *slog.Logger, readiness *health.Readiness, repo medication.Repository, info buildinfo.Info) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", health.Liveness)
+	mux.Handle("GET /readyz", readiness)
+	mux.Handle("GET /version", buildinfo.Handler(info))
+	meds := medication.NewService(repo)
+	medication.NewHandler(meds, log).Register(mux)
+	comparer := pricing.NewComparer(pricing.DefaultNetworks(), cfg.Pricing.Budget)
+	pricing.NewHandler(meds, comparer, log).Register(mux)
+	return mux
 }
 
 // Migrations get their own short-lived pool: see db.OpenForMigrations.
