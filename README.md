@@ -8,14 +8,45 @@ that fans out to several pricing networks under a fixed latency budget.
 - **Try it:** [`requests.http`](requests.http) for the JetBrains HTTP Client, or `make smoke` for the same flow with curl.
 - **How AI was used:** [`AI_USAGE.md`](AI_USAGE.md).
 
-## The brief → where it is
+## How I approached the brief
 
-| The brief asks for | Where it is |
-|---|---|
-| RESTful CRUD | `POST`, `GET` (one and list), `PUT`, `DELETE` under `/v1/medications`; see [API at a glance](#api-at-a-glance) and [`openapi.yaml`](openapi.yaml) |
-| A medication with ID, Name, Dosage, Form | `id` (UUIDv7), `name`, `dosage` (exact decimal strength + unit), `form`; extra fields `route`, `rxcui`, `ndc`, `version`, timestamps; see [Domain model](#domain-model) |
-| A production-ready foundation | Operations (config, probes, graceful shutdown, structured logs, container, CI), tests (unit, integration on real PostgreSQL, contract, fuzz, `synctest`), security (API keys denied by default, strict input validation, no PHI); see [Design decisions](#design-decisions-and-trade-offs), [Operations](#operations), [Testing](#testing) |
-| TODOs for what is not done | [Not done (TODO)](#not-done-todo) |
+| The brief says | How I read it | What I delivered |
+|---|---|---|
+| RESTful CRUD in Go | Create, read, list, update and delete, each with correct status codes | Five operations under `/v1/medications`; see [API at a glance](#api-at-a-glance) and [`openapi.yaml`](openapi.yaml) |
+| Medication object (ID, Name, Dosage, Form) and custom fields | Model it the way pharmacy systems do, with public standards | `id`, `name`, `form`, `dosage` as an exact decimal strength with units, plus `route`, `rxcui`, `ndc`, `version` and timestamps; see [Domain model](#domain-model) |
+| Performance and scalability | Queries that stay fast as the table grows; a stateless service | Keyset pagination, partial and trigram indexes checked with `EXPLAIN`, connection pooling with server-side timeouts; see [Design decisions](#design-decisions-and-trade-offs) |
+| RESTful best practices | Standard HTTP semantics rather than custom conventions | ETags with `If-Match` / `If-None-Match`, `Location` and `Link` headers, RFC 9457 problem+json errors, versioned paths |
+| Production-ready, full operational responsibility | I run it, so I must be able to deploy, observe and debug it | Validated config, probes, graceful shutdown, structured logs, build info, opt-in pprof, container, CI; see [Operations](#operations) |
+| Any packages | Pick few, well-known dependencies and say why | Standard library HTTP, pgx, goose, testcontainers; see [Go tooling](#go-tooling) |
+| Enhance to showcase expertise | One extension that fits the domain and shows Go concurrency | Price comparison fanned out under a latency budget, tested with `testing/synctest`; see [Why this extension](#why-this-extension-price-comparison-under-a-latency-budget) |
+| Not required to complete everything (TODOs) | Finish the core properly; list the rest honestly | [Not done (TODO)](#not-done-todo) |
+
+### Assumptions I made
+
+- **A catalog, not patient data.** Nothing stored is PHI; prescriptions would be a separate,
+  PHI-scoped resource.
+- **Identity is the clinical drug** (ingredient, strength, form, as in RxNorm), with one
+  representative NDC per entry. Multiple NDCs would come from a `/products` child resource.
+- **Dosage means product strength** (for example 250 mg per 5 mL), not the sig, the patient's
+  directions for use.
+
+### Questions I'd ask the team
+
+- Where does the catalog come from: manual entry, or import from a drug database?
+- Do consumers need one entry per NDC (package level) rather than per clinical drug?
+- Who calls this API, and which auth model do they already use?
+- What latency target do price quotes need to meet?
+
+### How I worked
+
+- **Plan first:** a written plan of small vertical slices, with open questions and risks.
+- **Small slices**, one commit each, so the git history mirrors the plan.
+- **Core before extension:** CRUD, validation and persistence were done and tested before the
+  price comparison.
+- **Every commit reviewed by me**; [`AI_USAGE.md`](AI_USAGE.md) explains how the AI agent was used.
+
+<!-- time spent: fill in -->
+- Time spent: about 12 hours over three days.
 
 ## Quick start
 
@@ -44,6 +75,8 @@ make dev               # db-up, build, migrate, seed, then the API in the foregr
 `make up` and `make dev` both use port 8080, so run one at a time. `make up` refuses to start
 if something else already answers there. A local API bound to `[::]:8080` and Docker bound to
 `127.0.0.1:8080` can coexist without error, and `localhost` would then quietly reach the wrong one.
+
+**Postman/Insomnia:** import `openapi.yaml` and set the `X-API-Key` header.
 
 **VS Code users:** `requests.http` targets the JetBrains HTTP Client: its response handlers
 capture IDs and ETags and assert status codes. Use `make smoke` or curl instead.
