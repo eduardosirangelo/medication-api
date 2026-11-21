@@ -1,136 +1,95 @@
 # AI usage
 
 This project was built with **Claude Code** (Anthropic's coding agent, Claude Opus model) as a
-pair programmer. This file says what the agent did, what I decided, how the output was
-checked, and what went wrong along the way.
+pair programmer. The agent wrote most of the code. The scope, the decisions, the review and
+every commit were mine. This file explains how that worked and where it went wrong.
 
 Commit messages carry no AI attribution; that was my choice, and this file is the disclosure instead.
 
-## How the work was split
+## How I directed the agent
 
-**I decided:**
-- The scope, the plan and every design decision. The main ones:
-  - exact decimal dosages;
-  - catalog identity at the clinical-drug level, with a representative NDC;
-  - real API-key auth that denies by default;
-  - `If-Match` required on PUT and optional on DELETE;
-  - substring search backed by `pg_trgm`;
-  - PUT only (PATCH left as a TODO);
-  - catalog only, with no PHI in scope.
-- The price-comparison extension and its framing: e-prescribing, plus my ad-exchange analogy
-  for the latency budget.
-- Developer tooling: the seed command, the smoke script, `make dev` and `make up`.
-- Code style: names and small functions carry the meaning, and comments explain only *why*.
+The same loop for every part of the project:
 
-**The agent:**
-- Proposed the plan as small vertical slices and listed open questions and risks.
-- Implemented one approved slice at a time.
-- Ran the checks after each slice (gofmt, `go vet`, `go test -race`, integration tests, lint,
-  plus a manual run against PostgreSQL), then summarized the diff and suggested a commit message.
+1. **Spec first.** I wrote the architecture decisions before any code: stdlib `net/http`,
+   PostgreSQL with pgx, layered packages, problem+json errors, optimistic concurrency, soft
+   delete, keyset pagination, and what "production-ready" had to include.
+2. **Plan, no code.** The agent proposed the work as small vertical slices, with open questions
+   and risks, and stopped for my approval.
+3. **I answered the open questions** with decisions, so ambiguity was resolved by me, not filled
+   in by the agent.
+4. **One slice at a time.** Each slice ended with the checks (gofmt, vet, lint, `go test -race`,
+   integration tests), a diff summary, an explanation and a suggested commit message. Then it
+   stopped.
+5. **I reviewed, ran it by hand, and committed it myself.** One commit per slice; the agent
+   never committed or pushed.
 
-**Review and commits.** I reviewed every slice, asked for changes, and made every commit
-myself. The agent never committed or pushed.
+Standing rules I gave it: English only; never commit or push; no AI attribution; comments
+explain *why*, never *what*; public standards only (NDC, RxNorm); never claim HIPAA compliance.
+
+## Who decided what
+
+**Mine:**
+- Scope and the cut line: what is built and what is a TODO.
+- The domain model: catalog identity at RxNorm's clinical-drug level, a representative NDC,
+  and `dosage` as product strength. This comes from my experience with e-prescribing.
+- Adding NDC, RxNorm and route as a **new** migration instead of editing an applied one.
+- The price-comparison extension and its framing (my ad-exchange analogy).
+- The Go tooling to showcase: `testing/synctest`, `b.Loop`, `Example` tests, govulncheck,
+  pprof, build info.
+- Developer tooling after testing by hand: the seed command, `requests.http`, `make smoke`,
+  `make dev`.
+
+**Proposed by the agent during plan review, accepted by me:**
+- Concentration dosages (`per_value`/`per_unit`): "500 mg" does not describe a syrup.
+- Name normalization and a case-insensitive unique index, so near-duplicates are caught.
+- Real API-key auth instead of the stub I had planned.
+- Migrations as a separate `migrate` step instead of running on startup.
+- Strong ETags with `If-Match` required on PUT (428 when missing).
+- A cursor bound to its filters, and readiness failing before shutdown.
 
 ## How the output was checked
 
-- **Tests that prove what they claim.** Where a test guards a specific property, the agent
-  broke the code on purpose to confirm the test fails:
-  - The pricing leak test fails with `blocked goroutines remain` when the result channel is
-    made unbuffered.
-  - The OpenAPI contract test catches each of three deliberate spec mutations: a removed
-    operation, a wrong security setting, and a renamed path.
-- **Real infrastructure.** Integration tests run against PostgreSQL 18 in testcontainers,
-  including:
-  - races between concurrent writers;
-  - `EXPLAIN` checks that the indexes are used;
-  - migrations applied on a populated database.
-- **Manual runs after every slice.** The binary was run against compose PostgreSQL, and later
-  the full Docker stack, with `scripts/smoke.sh` covering the whole flow.
-- **Claims checked against code.** While writing the docs, the agent re-checked statements
-  against the code and fixed two that were wrong:
-  - the response type of `dosage.value` (a JSON number, not a string);
-  - an overstated "about 100 lines" for the middleware.
+- **Tests that prove what they claim.** Where a test guards a property, the code was broken on
+  purpose to see the test fail. Example: making the pricing result channel unbuffered makes the
+  leak test fail with `blocked goroutines remain`.
+- **Real infrastructure.** Integration tests run against PostgreSQL 18 in testcontainers:
+  concurrent writers, `EXPLAIN` checks that the indexes are used, migrations on a populated
+  database.
+- **By hand, after every slice.** I ran `requests.http` in GoLand and `make smoke` against the
+  binary and later the Docker stack. "Done" meant I had seen it run.
+- **External linting.** Redocly on `openapi.yaml` found a YAML error that the agent's checks
+  missed (below); `make openapi-lint` keeps it repeatable.
 
-## Incidents
+## Where it went wrong
 
-### 1. A destructive command blocked by the guardrail
+**Caught by the guardrails**
+- **A destructive command.** One long shell command from the agent ended with a stray
+  `mv .env.example /dev/null`, which would have deleted a tracked file. Claude Code's
+  permission check blocked the whole command, so nothing ran. The agent confirmed the file was
+  intact and reported it. Lesson: long compound commands hide mistakes, so I keep the
+  guardrails on.
+- **Testing the wrong process.** A local API on IPv6 and the Docker container on IPv4 were both
+  on port 8080, so `localhost` reached the local one and a smoke run tested the wrong process.
+  The `/version` endpoint exposed it (an old commit). The run was redone over IPv4, and
+  `make up` now refuses to start if port 8080 is already taken.
 
-**What happened.** During slice 9 (auth), the agent composed one long shell command to update
-`.env.example`, the Makefile, `requests.http` and the smoke script. Tacked onto it was a stray
-`mv .env.example /dev/null`, which would have deleted a tracked file. It served no purpose.
+**Caught by me**
+- **Commit messages with AI attribution** in the first suggestions. Removed, and made a rule.
+- **A request in `requests.http` priced a medication deleted earlier in the file**, so it got
+  404 instead of 422. Found by my manual run; fixed and re-run until every assertion passed.
+- **A slice started before my plan update**, so the new fields were missing. I committed it as
+  it was and added the fields in a follow-up migration.
+- **Slice 9 was still uncommitted when slice 10 started**, mixing both in the working tree. I
+  stopped it and had the agent separate them, so each slice is still its own commit.
+- **Noisy seed logs.** Re-running the seed made PostgreSQL log 16 duplicate-key errors, which
+  looks broken to a reviewer. The seed now uses `ON CONFLICT DO NOTHING`.
+- **The OpenAPI YAML error.** An unquoted description with a comma inside a flow mapping had
+  silently become an extra property. The contract test only checks routes and security, so it
+  could not see it.
 
-**How it was stopped.** Claude Code's auto-mode permission classifier blocked the **whole**
-command as a destructive action, so nothing in it ran. The agent then:
-- confirmed with `git status` and `ls` that `.env.example` was intact and unmodified;
-- reran the edits without the stray part, each replacement asserting its exact match first;
-- reported the mistake to me in the slice summary rather than leaving it buried in the
-  tool log.
+## Not yet verified
 
-**Lesson.** The guardrail did its job. The agent's own review of a long, mechanical command
-did not.
-- Long compound commands hide mistakes.
-- Destructive operations need a second, independent check.
-- "Verify, then report" after a blocked action is the right reflex.
-
-### 2. The IPv4/IPv6 trap: verifying the wrong process
-
-**Symptom.** While verifying slice 10 (Docker), `GET /version` on `localhost:8080` reported an
-old commit, although the image had just been rebuilt.
-
-**Diagnosis.** The agent narrowed it down step by step instead of assuming a cause:
-1. It suspected Docker's build cache and inspected the build steps; they were cached.
-2. It extracted the binaries from the image and from the running container and read their
-   VCS stamp with `go version -m`. Both carried the **new** commit, so the image was fine.
-3. It ran `lsof -nP -iTCP:8080 -sTCP:LISTEN`, which showed two listeners:
-   - Docker on `127.0.0.1:8080` (IPv4);
-   - a local `./bin/api` on `*:8080` (IPv6), most likely left over from a `make dev` session.
-
-   macOS allows both binds without an error, and `curl localhost` tries `::1` first, so the
-   requests went to the local process.
-4. `curl -4` and `curl -6` against the same URL confirmed it: two different commits.
-
-**Consequences and fix.**
-- **The earlier check was invalid.** The smoke run the agent had reported as "against the
-  container" in that same turn had actually tested the local process. The agent said so
-  explicitly and reran the tests over IPv4 (`BASE_URL=http://127.0.0.1:8080`). The container's
-  own logs showed the requests' key IDs, proving they reached it this time.
-- **`make up` now refuses to start** when something other than the stack's API already answers
-  on port 8080, with a message naming the likely cause.
-- **The other process was left alone.** The agent had not started it, so it did not kill it.
-
-### Other actions the guardrail blocked
-
-The classifier also denied two verification steps that would have downloaded and run
-third-party code:
-- pulling the JetBrains HTTP Client Docker image to run `requests.http`;
-- running an npm-based OpenAPI linter.
-
-The agent did not look for a way around either block. Instead:
-- it checked each `requests.http` expectation with curl;
-- it validated the spec with the Go contract test plus a temporary local check that every
-  `$ref` resolves and every component is used.
-
-Running those external tools remains a manual step:
-`npx @redocly/cli lint openapi.yaml`, or opening `requests.http` in GoLand.
-
-## Mistakes I caught
-
-- **A walkthrough step used a deleted resource.** A step added to `requests.http` for slice 8.5
-  priced the medication deleted earlier in the walkthrough, so it got a 404 instead of the
-  intended 422.
-  - The agent had validated that file with curl in an earlier slice but not this new step.
-  - The smoke script, which covers the same flow, did not have the bug.
-  - Fixed by capturing the re-created entry's ID into its own variable, then auditing every
-    variable in the file.
-- **Two slices mixed in one working tree.** The agent started slice 10 while slice 9 was still
-  uncommitted, so changes from both ended up in the same files. When I stopped it, the agent:
-  - rebuilt a slice-9-only tree in a scratch directory;
-  - verified that tree on its own (build, vet, race tests, lint, and a smoke run);
-  - produced a patch I could stage with `git apply --cached`, so slice 9 could be committed
-    separately without touching my working tree.
-
-## What remains unverified
-
-- **CI has not run on GitHub yet** (no remote). The workflow passes `actionlint`, and every job
-  runs the same `make` targets that pass locally.
-- **No external OpenAPI linter has been run** (see above).
+- **CI has not run on GitHub** (no remote yet). The workflow passes `actionlint`, and every
+  job runs the same `make` targets that pass locally.
+- **The OpenAPI linter is not in CI**, because it needs Node.js. `make openapi-lint` runs it
+  locally.

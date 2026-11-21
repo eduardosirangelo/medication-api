@@ -7,6 +7,7 @@ LINT_VERSION  := v2.15.0
 LINT          := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(LINT_VERSION)
 VULN_VERSION  := v1.1.4
 VULN          := go run golang.org/x/vuln/cmd/govulncheck@$(VULN_VERSION)
+REDOCLY_VERSION := 2.82.0
 IMAGE         := medication-api:local
 
 # Load .env (if present) into the environment of recipes that run the app.
@@ -131,6 +132,10 @@ lint: ## Run golangci-lint (pinned version)
 .PHONY: vuln
 vuln: ## Scan dependencies and stdlib for known vulnerabilities (govulncheck, pinned)
 	$(VULN) ./...
+
+.PHONY: openapi-lint
+openapi-lint: ## Lint openapi.yaml with Redocly CLI (pinned; needs Node.js, not part of check/CI)
+	npx --yes @redocly/cli@$(REDOCLY_VERSION) lint openapi.yaml
 
 .PHONY: tidy
 tidy: ## Tidy go.mod/go.sum

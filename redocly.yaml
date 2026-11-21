@@ -1,0 +1,10 @@
+extends:
+  - recommended
+
+rules:
+  # Private take-home project: no license is granted.
+  info-license: off
+  # The only server is the local dev instance, by design.
+  no-server-example.com: off
+  # The public probes (/healthz, /readyz, /version) take no input, so they have no client errors.
+  operation-4xx-response: off

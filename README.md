@@ -8,9 +8,18 @@ that fans out to several pricing networks under a fixed latency budget.
 - **Try it:** [`requests.http`](requests.http) for the JetBrains HTTP Client, or `make smoke` for the same flow with curl.
 - **How AI was used:** [`AI_USAGE.md`](AI_USAGE.md).
 
+## The brief → where it is
+
+| The brief asks for | Where it is |
+|---|---|
+| RESTful CRUD | `POST`, `GET` (one and list), `PUT`, `DELETE` under `/v1/medications`; see [API at a glance](#api-at-a-glance) and [`openapi.yaml`](openapi.yaml) |
+| A medication with ID, Name, Dosage, Form | `id` (UUIDv7), `name`, `dosage` (exact decimal strength + unit), `form`; extra fields `route`, `rxcui`, `ndc`, `version`, timestamps; see [Domain model](#domain-model) |
+| A production-ready foundation | Operations (config, probes, graceful shutdown, structured logs, container, CI), tests (unit, integration on real PostgreSQL, contract, fuzz, `synctest`), security (API keys denied by default, strict input validation, no PHI); see [Design decisions](#design-decisions-and-trade-offs), [Operations](#operations), [Testing](#testing) |
+| TODOs for what is not done | [Not done (TODO)](#not-done-todo) |
+
 ## Quick start
 
-**Only Docker installed:**
+**Docker, plus curl and jq for `make smoke`:**
 
 ```bash
 make up      # builds the image; starts db → migrate → seed → api; waits until healthy (~45s cold)
@@ -109,7 +118,7 @@ Errors are RFC 9457 `application/problem+json` with a `request_id` that matches 
 ## Why this extension: price comparison under a latency budget
 
 In e-prescribing, the useful moment to show a drug's cash price is while the prescription is
-being written, and that moment does not wait. The analogy I had in mind is an ad exchange:
+being written or while the patient is at the pharmacy counter, and neither moment waits. The analogy I had in mind is an ad exchange:
 
 - The request fans out to every bidder at once.
 - The auction closes at a fixed deadline.
@@ -139,11 +148,36 @@ being written, and that moment does not wait. The analogy I had in mind is an ad
   catalog's representative NDC.
 - A medication without an NDC gets a 422.
 
+## Project layout
+
+```
+cmd/api/                  entry point: serve, migrate, seed, healthcheck; route table
+internal/medication/      catalog domain: model, validation, service, HTTP handlers, PostgreSQL repository
+internal/pricing/         price comparison: network interface, simulated networks, fan-out comparer, handler
+internal/seed/            sample catalog for local development and demos
+internal/platform/
+  admin/                  pprof on a separate, opt-in listener
+  auth/                   static API keys, constant-time comparison
+  buildinfo/              version and VCS stamp from the Go build metadata
+  config/                 environment configuration, validated at startup
+  db/                     pgx connection pool and goose migrations
+  dbtest/                 throwaway PostgreSQL container for integration tests
+  health/                 liveness and readiness probes
+  httpx/                  server, strict JSON decoding, problem+json, ETags
+  logging/                structured JSON logger
+  middleware/             request ID, access log, recover, body limit
+  requestid/              request ID generation and context propagation
+migrations/               SQL migrations, embedded into the binary
+scripts/smoke.sh          end-to-end check with curl and jq
+openapi.yaml              API contract (OpenAPI 3.1)
+requests.http             walkthrough for the JetBrains HTTP Client
+```
+
 ## Design decisions and trade-offs
 
 **HTTP layer**
 - **Standard library `net/http`** with Go 1.22+ method patterns. A framework would add little
-  for seven routes. The middleware chain, request ID → access log → recover → auth → body
+  for nine operations. The middleware chain, request ID → access log → recover → auth → body
   limit, is a handful of small, separately tested functions (about 230 lines including auth).
 - **Strict decoding:** unknown fields are rejected (a typo such as `"dosge"` must not be
   silently ignored), numbers never pass through `float64`, and the body must be exactly one
@@ -292,6 +326,9 @@ only runs when invoked by name, so a production catalog cannot receive sample da
   middleware's public paths.
 - **`make smoke`:** the same end-to-end flow against any running instance; CI runs it against
   the Docker stack.
+- **`make openapi-lint`:** lints `openapi.yaml` with a pinned Redocly CLI (needs Node.js). It is
+  a manual step, not part of `make check` or CI. [`redocly.yaml`](redocly.yaml) turns off three
+  rules, each with its reason.
 
 ## Go tooling
 
