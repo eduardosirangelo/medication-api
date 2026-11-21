@@ -195,12 +195,15 @@ func newHandler(cfg config.Config, log *slog.Logger, readiness *health.Readiness
 
 	// RequestID first so every log line and problem body carries the ID;
 	// AccessLog outside Recover so recovered panics are logged as 500s;
-	// auth before the body limit so unauthenticated callers get 401, not 413.
+	// auth before the body limit so unauthenticated callers get 401, not 413;
+	// the deadline after auth so rejected callers cost no timer, and inside
+	// AccessLog so its context still tells a client disconnect from a timeout.
 	return middleware.Chain(httpx.WithProblemFallback(mux),
 		middleware.RequestID(),
 		middleware.AccessLog(log),
 		middleware.Recover(log),
 		auth.Require(keys, publicPaths...),
+		middleware.Deadline(cfg.HTTP.RequestTimeout),
 		middleware.MaxBodyBytes(cfg.HTTP.MaxBodyBytes),
 	)
 }

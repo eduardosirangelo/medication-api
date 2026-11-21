@@ -37,6 +37,7 @@ func TestLoad_Defaults(t *testing.T) {
 			ReadTimeout:       10 * time.Second,
 			WriteTimeout:      15 * time.Second,
 			IdleTimeout:       60 * time.Second,
+			RequestTimeout:    10 * time.Second,
 			ShutdownTimeout:   20 * time.Second,
 			DrainDelay:        5 * time.Second,
 			MaxBodyBytes:      64 << 10,
@@ -66,6 +67,7 @@ func TestLoad_Overrides(t *testing.T) {
 		"HTTP_READ_TIMEOUT":        "3s",
 		"HTTP_WRITE_TIMEOUT":       "4s",
 		"HTTP_IDLE_TIMEOUT":        "1m",
+		"REQUEST_TIMEOUT":          "3s",
 		"SHUTDOWN_TIMEOUT":         "30s",
 		"SHUTDOWN_DRAIN_DELAY":     "0s",
 		"HTTP_MAX_BODY_BYTES":      "2048",
@@ -85,7 +87,7 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 	h, d := cfg.HTTP, cfg.DB
 	if h.Addr != "127.0.0.1:9000" || h.ReadHeaderTimeout != 2*time.Second || h.ReadTimeout != 3*time.Second ||
-		h.WriteTimeout != 4*time.Second || h.IdleTimeout != time.Minute || h.ShutdownTimeout != 30*time.Second ||
+		h.WriteTimeout != 4*time.Second || h.IdleTimeout != time.Minute || h.RequestTimeout != 3*time.Second || h.ShutdownTimeout != 30*time.Second ||
 		h.DrainDelay != 0 || h.MaxBodyBytes != 2048 {
 		t.Errorf("HTTP overrides not applied: %+v", h)
 	}
@@ -134,7 +136,9 @@ func TestLoad_Invalid(t *testing.T) {
 		{"min above max", map[string]string{"DB_MIN_CONNS": "5", "DB_MAX_CONNS": "2"}, []string{"must not exceed"}},
 		{"bad bool", map[string]string{"MIGRATE_ON_START": "yes please"}, []string{"MIGRATE_ON_START"}},
 		{"zero pricing budget", map[string]string{"PRICING_BUDGET": "0s"}, []string{"PRICING_BUDGET"}},
-		{"budget not below write timeout", map[string]string{"PRICING_BUDGET": "2s", "HTTP_WRITE_TIMEOUT": "2s"}, []string{"must be below HTTP_WRITE_TIMEOUT"}},
+		{"zero request timeout", map[string]string{"REQUEST_TIMEOUT": "0s"}, []string{"REQUEST_TIMEOUT"}},
+		{"request timeout not below write timeout", map[string]string{"REQUEST_TIMEOUT": "15s"}, []string{"REQUEST_TIMEOUT (15s) must be below HTTP_WRITE_TIMEOUT"}},
+		{"budget not below request timeout", map[string]string{"PRICING_BUDGET": "2s", "REQUEST_TIMEOUT": "2s"}, []string{"PRICING_BUDGET (2s) must be below REQUEST_TIMEOUT"}},
 		{"api key without id", map[string]string{"API_KEYS": "0123456789abcdef"}, []string{"API_KEYS: entry 1"}},
 		{"api key id with spaces", map[string]string{"API_KEYS": "my app:0123456789abcdef"}, []string{"API_KEYS: entry 1"}},
 		{"short api key", map[string]string{"API_KEYS": "app:short"}, []string{`key "app": must be at least 16`}},

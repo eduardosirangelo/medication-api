@@ -71,6 +71,7 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/Timeout' }
     get:
       tags: [medications]
       operationId: listMedications
@@ -107,6 +108,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/Timeout' }
 
   /v1/medications/{id}:
     parameters:
@@ -135,6 +137,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/Timeout' }
     put:
       tags: [medications]
       operationId: replaceMedication
@@ -172,6 +175,7 @@ paths:
         '422': { $ref: '#/components/responses/ValidationFailed' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/Timeout' }
     delete:
       tags: [medications]
       operationId: deleteMedication
@@ -190,6 +194,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/Timeout' }
 
   /v1/medications/{id}/prices:
     parameters:
@@ -232,10 +237,11 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '500': { $ref: '#/components/responses/InternalError' }
         '503':
-          description: No network returned a quote within the budget.
+          description: >-
+            No network returned a quote within the budget, or the medication lookup did not
+            complete within the request deadline.
           headers:
-            Retry-After:
-              schema: { type: integer, example: 1 }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -307,6 +313,9 @@ components:
     ETag:
       description: Strong ETag of the medication's version, e.g. `"3"`.
       schema: { type: string, example: '"3"' }
+    RetryAfter:
+      description: 'Seconds to wait before retrying.'
+      schema: { type: integer, example: 1 }
 
   schemas:
     Form:
@@ -500,6 +509,15 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     InternalError:
       description: Unexpected error; details are in the server log under `request_id`, never in the response.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Timeout:
+      description: >-
+        The request did not complete within `REQUEST_TIMEOUT`, or a database statement hit
+        `DB_STATEMENT_TIMEOUT`. Usually transient; retry after `Retry-After` seconds.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

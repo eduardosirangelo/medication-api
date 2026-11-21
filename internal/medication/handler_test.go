@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -251,6 +252,61 @@ func TestCreate_ClientCancelledIsNotLoggedAsError(t *testing.T) {
 	}
 	if strings.Contains(api.logs.String(), `"level":"ERROR"`) {
 		t.Errorf("cancellation logged as error: %s", api.logs.String())
+	}
+}
+
+func TestTimeoutIs503WithRetryAfter(t *testing.T) {
+	const id = "/v1/medications/019a9c3e-7a10-7000-8000-000000000001"
+	routes := []struct{ method, path, body, ifMatch string }{
+		{http.MethodPost, "/v1/medications", paracetamolJSON, ""},
+		{http.MethodGet, "/v1/medications", "", ""},
+		{http.MethodGet, id, "", ""},
+		{http.MethodPut, id, paracetamolJSON, `"1"`},
+		{http.MethodDelete, id, "", ""},
+	}
+	causes := map[string]error{
+		"statement timeout": fmt.Errorf("select medication: %w: %w", ErrTimeout, errors.New("ERROR: canceling statement (SQLSTATE 57014)")),
+		"request deadline":  fmt.Errorf("select medication: %w", context.DeadlineExceeded),
+	}
+	for name, cause := range causes {
+		for _, rt := range routes {
+			t.Run(name+"/"+rt.method+" "+rt.path, func(t *testing.T) {
+				api := newTestAPI(t)
+				api.repo.err = cause
+				var headers []string
+				if rt.ifMatch != "" {
+					headers = []string{"If-Match", rt.ifMatch}
+				}
+				rec := api.do(t, rt.method, rt.path, rt.body, headers...)
+
+				if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "1" ||
+					rec.Header().Get("Content-Type") != httpx.ProblemContentType {
+					t.Fatalf("status %d, Retry-After %q, Content-Type %q",
+						rec.Code, rec.Header().Get("Retry-After"), rec.Header().Get("Content-Type"))
+				}
+				if logs := api.logs.String(); !strings.Contains(logs, `"level":"WARN"`) || strings.Contains(logs, `"level":"ERROR"`) {
+					t.Errorf("want one WARN and no ERROR, got %s", logs)
+				}
+			})
+		}
+	}
+}
+
+// pgx can report a query cancelled because the client left as a plain
+// PostgreSQL error; the request context still says what happened.
+func TestClientGoneWithDriverErrorIsNotAnError(t *testing.T) {
+	api := newTestAPI(t)
+	api.repo.err = errors.New("ERROR: canceling statement due to user request (SQLSTATE 57014)")
+	ctx, disconnect := context.WithCancel(t.Context())
+	disconnect()
+	rec := httptest.NewRecorder()
+	api.mux.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/medications", nil))
+
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("status %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if strings.Contains(api.logs.String(), `"level":"ERROR"`) {
+		t.Errorf("client disconnect logged as error: %s", api.logs.String())
 	}
 }
 

@@ -2,10 +2,15 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 )
+
+// StatusClientClosedRequest is nginx's convention for "the client went away
+// before the response": not a server failure, so it must not page anyone.
+const StatusClientClosedRequest = 499
 
 // Probes hit every few seconds; at info level they would drown real traffic.
 var quietPaths = map[string]bool{"/healthz": true, "/readyz": true}
@@ -42,7 +47,7 @@ func Annotate(ctx context.Context, attrs ...slog.Attr) {
 }
 
 func logRequest(log *slog.Logger, r *http.Request, sw *statusWriter, start time.Time, notes *annotations) {
-	status := sw.Status()
+	status := loggedStatus(r, sw.Status())
 	attrs := append([]slog.Attr{
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
@@ -51,6 +56,16 @@ func logRequest(log *slog.Logger, r *http.Request, sw *statusWriter, start time.
 		slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 	}, notes.attrs...)
 	log.LogAttrs(r.Context(), requestLogLevel(r.URL.Path, status), "http request", attrs...)
+}
+
+// The context AccessLog sees is cancelled only when the client disconnects
+// (the request deadline is set further in). A 5xx written after that is the
+// handler abandoning work nobody will read, so it is recorded as 499.
+func loggedStatus(r *http.Request, written int) int {
+	if written >= 500 && errors.Is(r.Context().Err(), context.Canceled) {
+		return StatusClientClosedRequest
+	}
+	return written
 }
 
 func requestLogLevel(path string, status int) slog.Level {

@@ -14,7 +14,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const pgUniqueViolation = "23505"
+const (
+	pgUniqueViolation = "23505"
+	// Raised by statement_timeout, and by the cancel request pgx sends when
+	// the request deadline expires mid-query.
+	pgQueryCanceled = "57014"
+)
 
 // Each unique constraint maps to its own domain error; any other unique
 // violation (e.g. a primary-key collision) is a bug, not a client conflict.
@@ -63,7 +68,7 @@ func (r *PostgresRepository) Create(ctx context.Context, m Medication) (Medicati
 	row := r.pool.QueryRow(ctx, insertMedication+` RETURNING `+selectColumns, insertArgs(m)...)
 	created, err := scanMedication(row)
 	if err != nil {
-		return Medication{}, fmt.Errorf("insert medication: %w", translateUniqueViolation(err))
+		return Medication{}, fmt.Errorf("insert medication: %w", translate(err))
 	}
 	return created, nil
 }
@@ -81,7 +86,7 @@ func (r *PostgresRepository) CreateIfAbsent(ctx context.Context, m Medication) (
 	case errors.Is(err, pgx.ErrNoRows):
 		return Medication{}, false, nil
 	case err != nil:
-		return Medication{}, false, fmt.Errorf("insert medication: %w", err)
+		return Medication{}, false, fmt.Errorf("insert medication: %w", translate(err))
 	}
 	return created, true, nil
 }
@@ -107,7 +112,7 @@ func (r *PostgresRepository) Update(ctx context.Context, id uuid.UUID, expectedV
 		return Medication{}, r.whyUnchanged(ctx, id)
 	}
 	if err != nil {
-		return Medication{}, fmt.Errorf("update medication: %w", translateUniqueViolation(err))
+		return Medication{}, fmt.Errorf("update medication: %w", translate(err))
 	}
 	return updated, nil
 }
@@ -125,7 +130,7 @@ func (r *PostgresRepository) Delete(ctx context.Context, id uuid.UUID, expectedV
 		  AND ($2::bigint[] IS NULL OR version = ANY($2::bigint[]))`,
 		id, expectedVersions)
 	if err != nil {
-		return fmt.Errorf("delete medication: %w", err)
+		return fmt.Errorf("delete medication: %w", translate(err))
 	}
 	if tag.RowsAffected() == 0 {
 		return r.whyUnchanged(ctx, id)
@@ -140,7 +145,7 @@ func (r *PostgresRepository) whyUnchanged(ctx context.Context, id uuid.UUID) err
 		`SELECT EXISTS (SELECT 1 FROM medications WHERE id = $1 AND deleted_at IS NULL)`, id).Scan(&exists)
 	switch {
 	case err != nil:
-		return fmt.Errorf("check medication existence: %w", err)
+		return fmt.Errorf("check medication existence: %w", translate(err))
 	case exists:
 		return ErrVersionMismatch
 	default:
@@ -158,7 +163,7 @@ func (r *PostgresRepository) Get(ctx context.Context, id uuid.UUID) (Medication,
 		return Medication{}, ErrNotFound
 	}
 	if err != nil {
-		return Medication{}, fmt.Errorf("select medication: %w", err)
+		return Medication{}, fmt.Errorf("select medication: %w", translate(err))
 	}
 	return m, nil
 }
@@ -167,13 +172,13 @@ func (r *PostgresRepository) List(ctx context.Context, f ListFilter, after uuid.
 	query, args := buildListQuery(f, after, limit)
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list medications: %w", err)
+		return nil, fmt.Errorf("list medications: %w", translate(err))
 	}
 	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Medication, error) {
 		return scanMedication(row)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list medications: %w", err)
+		return nil, fmt.Errorf("list medications: %w", translate(err))
 	}
 	return items, nil
 }
@@ -213,12 +218,18 @@ func escapeLike(s string) string {
 
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-func translateUniqueViolation(err error) error {
+// translate turns the driver errors callers must act on into domain errors,
+// so the HTTP layer never imports pgx.
+func translate(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
+	isPg := errors.As(err, &pgErr)
+	switch {
+	case isPg && pgErr.Code == pgUniqueViolation:
 		if domainErr, ok := uniqueConstraintErrors[pgErr.ConstraintName]; ok {
 			return domainErr
 		}
+	case isPg && pgErr.Code == pgQueryCanceled, errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %w", ErrTimeout, err)
 	}
 	return err
 }

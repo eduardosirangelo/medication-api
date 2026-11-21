@@ -34,7 +34,11 @@ type HTTP struct {
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
-	ShutdownTimeout   time.Duration
+	// RequestTimeout bounds the work behind one request. It is below
+	// WriteTimeout so a slow dependency still gets the client a 503, not a
+	// dropped connection.
+	RequestTimeout  time.Duration
+	ShutdownTimeout time.Duration
 	// DrainDelay is how long /readyz reports failure before the server stops
 	// accepting connections, so load balancers can stop routing to us first.
 	DrainDelay   time.Duration
@@ -100,6 +104,7 @@ func Load(lookup LookupFunc) (Config, error) {
 			ReadTimeout:       p.duration("HTTP_READ_TIMEOUT", 10*time.Second),
 			WriteTimeout:      p.duration("HTTP_WRITE_TIMEOUT", 15*time.Second),
 			IdleTimeout:       p.duration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+			RequestTimeout:    p.duration("REQUEST_TIMEOUT", 10*time.Second),
 			ShutdownTimeout:   p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
 			DrainDelay:        p.durationOrZero("SHUTDOWN_DRAIN_DELAY", 5*time.Second),
 			MaxBodyBytes:      p.positiveInt64("HTTP_MAX_BODY_BYTES", 64<<10), // 64 KiB: a medication record is < 1 KiB
@@ -130,10 +135,16 @@ func Load(lookup LookupFunc) (Config, error) {
 		p.errs = append(p.errs, fmt.Errorf("ADMIN_ADDR must differ from HTTP_ADDR (%s)", cfg.HTTP.Addr))
 	}
 
-	// Past the write timeout the client would get a dropped connection instead
-	// of the partial result the budget exists to deliver.
-	if cfg.Pricing.Budget >= cfg.HTTP.WriteTimeout {
-		p.errs = append(p.errs, fmt.Errorf("PRICING_BUDGET (%s) must be below HTTP_WRITE_TIMEOUT (%s)", cfg.Pricing.Budget, cfg.HTTP.WriteTimeout))
+	// Past the write timeout the server can no longer send the 503 the
+	// request deadline exists to deliver.
+	if cfg.HTTP.RequestTimeout >= cfg.HTTP.WriteTimeout {
+		p.errs = append(p.errs, fmt.Errorf("REQUEST_TIMEOUT (%s) must be below HTTP_WRITE_TIMEOUT (%s)", cfg.HTTP.RequestTimeout, cfg.HTTP.WriteTimeout))
+	}
+
+	// Past the request deadline the fan-out would be cancelled before it can
+	// return the partial result the budget exists to deliver.
+	if cfg.Pricing.Budget >= cfg.HTTP.RequestTimeout {
+		p.errs = append(p.errs, fmt.Errorf("PRICING_BUDGET (%s) must be below REQUEST_TIMEOUT (%s)", cfg.Pricing.Budget, cfg.HTTP.RequestTimeout))
 	}
 
 	if err := errors.Join(p.errs...); err != nil {

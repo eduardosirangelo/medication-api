@@ -7,12 +7,14 @@ import (
 
 // The HTTP layer maps these with errors.Is, so they must survive wrapping:
 // ErrNotFound → 404, ErrDuplicate and ErrDuplicateNDC → 409,
-// ErrVersionMismatch → 412, *ValidationError → 422.
+// ErrVersionMismatch → 412, *ValidationError → 422, ErrTimeout → 503.
 var (
 	ErrNotFound        = errors.New("medication not found")
 	ErrDuplicate       = errors.New("an active medication with the same name, dosage and form already exists")
 	ErrDuplicateNDC    = errors.New("an active medication with the same NDC already exists")
 	ErrVersionMismatch = errors.New("medication was modified by another request")
+	// ErrTimeout wraps the store's own error, which the log still shows.
+	ErrTimeout = errors.New("medication store did not answer in time")
 )
 
 // FieldError names an invalid input field by its API path (e.g.

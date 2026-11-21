@@ -733,3 +733,54 @@ func TestPostgres_CreateIfAbsent(t *testing.T) {
 		t.Fatalf("active rows = %d, err = %v", active, err)
 	}
 }
+
+// A row lock held by another transaction makes the UPDATE wait, which
+// exercises both ways a slow query ends: the server's statement_timeout and
+// the request deadline (pgx cancels the query when the context expires).
+func TestPostgres_SlowQueryIsErrTimeout(t *testing.T) {
+	repo := freshRepo(t)
+	m := createNamed(t, repo, "Locked", "tablet")
+	lock, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Rollback(context.WithoutCancel(t.Context())) })
+	if _, err := lock.Exec(t.Context(), "SELECT 1 FROM medications WHERE id = $1 FOR UPDATE", m.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testPool.Config().Copy()
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "200"
+	shortStatements, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(shortStatements.Close)
+
+	deadline := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+		t.Cleanup(cancel)
+		return ctx
+	}
+	tests := []struct {
+		name   string
+		repo   *PostgresRepository
+		ctx    func(*testing.T) context.Context
+		wantPg string // SQLSTATE expected in the chain, "" for none
+	}{
+		{"statement_timeout", NewPostgresRepository(shortStatements), func(t *testing.T) context.Context { return t.Context() }, pgQueryCanceled},
+		{"request deadline", repo, deadline, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.repo.Update(tt.ctx(t), m.ID, []int64{1}, m.Spec)
+			if !errors.Is(err, ErrTimeout) {
+				t.Fatalf("err = %v, want ErrTimeout", err)
+			}
+			var pgErr *pgconn.PgError
+			if tt.wantPg != "" && (!errors.As(err, &pgErr) || pgErr.Code != tt.wantPg) {
+				t.Errorf("err = %v, want SQLSTATE %s in the chain", err, tt.wantPg)
+			}
+		})
+	}
+}

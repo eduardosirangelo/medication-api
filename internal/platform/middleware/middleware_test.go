@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
@@ -296,4 +299,61 @@ func TestAccessLog_IncludesAnnotationsFromInnerHandlers(t *testing.T) {
 
 func TestAnnotate_OutsideAccessLogIsANoOp(t *testing.T) {
 	Annotate(t.Context(), slog.String("k", "v")) // must not panic
+}
+
+func TestAccessLog_ClientGoneIsLoggedAs499AtInfo(t *testing.T) {
+	tests := []struct {
+		name       string
+		written    int
+		wantStatus float64
+	}{
+		{"abandoned work", http.StatusServiceUnavailable, StatusClientClosedRequest},
+		{"response already decided", http.StatusOK, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := AccessLog(logging.New(&buf, slog.LevelInfo))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.written)
+			}))
+			ctx, disconnect := context.WithCancel(t.Context())
+			disconnect()
+			h.ServeHTTP(httptest.NewRecorder(), newReq(t, http.MethodGet, "/v1/x", nil).WithContext(ctx))
+
+			l := logLines(t, &buf)
+			if len(l) != 1 || l[0]["status"] != tt.wantStatus || l[0]["level"] != "INFO" {
+				t.Fatalf("log = %v", l)
+			}
+		})
+	}
+}
+
+func TestAccessLog_RequestDeadlineIsStillAnError(t *testing.T) {
+	var buf bytes.Buffer
+	h := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}), AccessLog(logging.New(&buf, slog.LevelInfo)), Deadline(time.Millisecond))
+	h.ServeHTTP(httptest.NewRecorder(), newReq(t, http.MethodGet, "/v1/x", nil))
+
+	if l := logLines(t, &buf); len(l) != 1 || l[0]["status"] != float64(503) || l[0]["level"] != "ERROR" {
+		t.Fatalf("log = %v", l)
+	}
+}
+
+func TestDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		var waited time.Duration
+		var cause error
+		h := Deadline(2 * time.Second)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+			waited, cause = time.Since(start), r.Context().Err()
+		}))
+		h.ServeHTTP(httptest.NewRecorder(), newReq(t, http.MethodGet, "/v1/x", nil))
+
+		if waited != 2*time.Second || !errors.Is(cause, context.DeadlineExceeded) {
+			t.Fatalf("waited %v, err %v; want 2s and DeadlineExceeded", waited, cause)
+		}
+	})
 }

@@ -100,21 +100,28 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		w.Header().Set("Retry-After", "1")
 		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusServiceUnavailable,
 			"No pricing network returned a quote within the time budget; retry later."))
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		// The caller gave up (client gone or an upstream deadline); nobody reads the reply.
+	case medication.ClientGone(r, err):
 		h.log.DebugContext(r.Context(), "price request abandoned by caller", slog.Any("error", err))
 		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusServiceUnavailable, ""))
+	case errors.Is(err, medication.ErrTimeout), errors.Is(err, context.DeadlineExceeded):
+		h.log.WarnContext(r.Context(), "price request timed out", slog.Any("error", err))
+		medication.WriteTimeout(w, r)
 	default:
 		h.log.ErrorContext(r.Context(), "unexpected error", slog.Any("error", err))
 		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusInternalServerError, ""))
 	}
 }
 
-// Warn, not error: a missing network degrades the answer but the request
-// still succeeds; a sustained rate is what should alert.
+// A network missing the budget is the budget working as designed, so it is
+// debug; a network failing is worth a warning. Neither is an error: the
+// request still succeeds, and a sustained rate is what should alert.
 func (h *Handler) logUnavailable(ctx context.Context, unavailable []Unavailable) {
 	for _, u := range unavailable {
-		h.log.WarnContext(ctx, "pricing network unavailable",
+		level := slog.LevelWarn
+		if u.Reason == ReasonTimeout {
+			level = slog.LevelDebug
+		}
+		h.log.Log(ctx, level, "pricing network unavailable",
 			slog.String("network", u.Network), slog.String("reason", string(u.Reason)), slog.Any("error", u.Err))
 	}
 }

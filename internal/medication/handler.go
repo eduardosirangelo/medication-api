@@ -191,15 +191,34 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 	case errors.Is(err, ErrVersionMismatch):
 		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusPreconditionFailed,
 			"The medication was modified by another request; fetch it again and retry with the new ETag."))
-	case errors.Is(err, context.Canceled):
-		// The client went away: not an operational error, and nobody reads the reply.
+	case ClientGone(r, err):
+		// Not an operational error, and nobody reads the reply; the access
+		// log records it as 499.
 		h.log.DebugContext(r.Context(), "request cancelled by client", slog.Any("error", err))
 		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusServiceUnavailable, ""))
+	case errors.Is(err, ErrTimeout), errors.Is(err, context.DeadlineExceeded):
+		h.log.WarnContext(r.Context(), "medication store timed out", slog.Any("error", err))
+		WriteTimeout(w, r)
 	default:
 		// Internals go to the log, never to the client.
 		h.log.ErrorContext(r.Context(), "unexpected error", slog.Any("error", err))
 		httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusInternalServerError, ""))
 	}
+}
+
+// ClientGone reports whether err is the caller disconnecting rather than a
+// failure. The request's own context is checked too: a cancelled query can
+// surface as a PostgreSQL error that does not wrap context.Canceled.
+func ClientGone(r *http.Request, err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled)
+}
+
+// WriteTimeout answers a request whose deadline or database statement
+// timeout expired. The condition is usually transient, hence Retry-After.
+func WriteTimeout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "1")
+	httpx.WriteProblem(w, r, httpx.NewProblem(http.StatusServiceUnavailable,
+		"The request did not complete in time; retry later."))
 }
 
 func (h *Handler) writeQueryError(w http.ResponseWriter, r *http.Request, err error) {

@@ -1,13 +1,16 @@
 package pricing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -22,6 +25,7 @@ var (
 	withNDC    = uuid.MustParse("019a9c3e-7a10-7000-8000-000000000001")
 	withoutNDC = uuid.MustParse("019a9c3e-7a10-7000-8000-000000000002")
 	brokenID   = uuid.MustParse("019a9c3e-7a10-7000-8000-000000000003")
+	slowID     = uuid.MustParse("019a9c3e-7a10-7000-8000-000000000004")
 )
 
 type fakeLookup struct{}
@@ -34,6 +38,8 @@ func (fakeLookup) Get(_ context.Context, id uuid.UUID) (medication.Medication, e
 		return medication.Medication{ID: id, Spec: medication.Spec{Name: "Ibuprofen"}}, nil
 	case brokenID:
 		return medication.Medication{}, errors.New("connection reset")
+	case slowID:
+		return medication.Medication{}, fmt.Errorf("select medication: %w", medication.ErrTimeout)
 	default:
 		return medication.Medication{}, medication.ErrNotFound
 	}
@@ -41,8 +47,12 @@ func (fakeLookup) Get(_ context.Context, id uuid.UUID) (medication.Medication, e
 
 func serve(t *testing.T, networks []Network, target string) *httptest.ResponseRecorder {
 	t.Helper()
+	return serveWithLog(t, slog.New(slog.NewTextHandler(io.Discard, nil)), networks, target)
+}
+
+func serveWithLog(t *testing.T, log *slog.Logger, networks []Network, target string) *httptest.ResponseRecorder {
+	t.Helper()
 	mux := http.NewServeMux()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	NewHandler(fakeLookup{}, NewComparer(networks, testBudget), log).Register(mux)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil))
@@ -139,6 +149,41 @@ func TestPrices_AllUnavailableAsksClientToRetry(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("status %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
 	}
+}
+
+func TestPrices_LookupTimeoutAsksClientToRetry(t *testing.T) {
+	rec := serve(t, []Network{fakeNetwork{name: "a", price: 100}}, pricesURL(slowID, "?quantity=1"))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("status %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+// A network missing the budget is routine; one failing deserves attention.
+func TestPrices_UnavailableNetworkLogLevels(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var logs bytes.Buffer
+		log := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		networks := []Network{
+			fakeNetwork{name: "ok", price: 100},
+			fakeNetwork{name: "slow", price: 90, latency: 2 * testBudget},
+			fakeNetwork{name: "broken", err: errors.New("bad gateway")},
+		}
+		if rec := serveWithLog(t, log, networks, pricesURL(withNDC, "?quantity=1")); rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+
+		levels := map[string]string{}
+		for line := range strings.Lines(logs.String()) {
+			var entry struct{ Level, Network string }
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatal(err)
+			}
+			levels[entry.Network] = entry.Level
+		}
+		if levels["slow"] != "DEBUG" || levels["broken"] != "WARN" || len(levels) != 2 {
+			t.Fatalf("levels by network = %v; want slow DEBUG, broken WARN", levels)
+		}
+	})
 }
 
 func equalJSON(t *testing.T, a, b any) bool {

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/eduardo-sirangelo/medication-api/internal/medication"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/auth"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/buildinfo"
 	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
@@ -107,5 +110,33 @@ func TestHealthcheck(t *testing.T) {
 	ready = false
 	if err := healthcheck(t.Context(), lookup); err == nil {
 		t.Fatal("not ready: want error")
+	}
+}
+
+// stuckRepo stands in for a database that never answers: it waits for the
+// request context, which only the Deadline middleware can end.
+type stuckRepo struct{ medication.Repository }
+
+func (stuckRepo) Get(ctx context.Context, _ uuid.UUID) (medication.Medication, error) {
+	<-ctx.Done()
+	return medication.Medication{}, ctx.Err()
+}
+
+func TestNewHandler_RequestDeadlineAnswers503(t *testing.T) {
+	const key = "wiring-test-key-0123456789"
+	cfg := config.Config{
+		HTTP: config.HTTP{MaxBodyBytes: 1 << 10, RequestTimeout: 50 * time.Millisecond},
+		Auth: config.Auth{Keys: []config.APIKey{{ID: "test", Key: key}}},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := newHandler(cfg, log, health.NewReadiness(okPinger{}, time.Second, log), stuckRepo{}, buildinfo.Info{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/medications/019a9c3e-7a10-7000-8000-000000000001", nil)
+	req.Header.Set(auth.Header, key)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("status %d, Retry-After %q: %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
 	}
 }

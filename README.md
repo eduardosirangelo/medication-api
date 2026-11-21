@@ -128,6 +128,7 @@ Errors are RFC 9457 `application/problem+json` with a `request_id` that matches 
 - **400** when the request has the wrong shape: malformed JSON, unknown fields, bad query parameters.
 - **422** when the shape is right but the content is invalid.
 - **415** when `Content-Type` is not JSON, **413** when the body is too large.
+- **503** with `Retry-After` when the request deadline or a database statement timeout expires.
 
 ## Domain model
 
@@ -198,7 +199,7 @@ internal/platform/
   health/                 liveness and readiness probes
   httpx/                  server, strict JSON decoding, problem+json, ETags
   logging/                structured JSON logger
-  middleware/             request ID, access log, recover, body limit
+  middleware/             request ID, access log, recover, request deadline, body limit
   requestid/              request ID generation and context propagation
 migrations/               SQL migrations, embedded into the binary
 scripts/smoke.sh          end-to-end check with curl and jq
@@ -210,8 +211,8 @@ requests.http             walkthrough for the JetBrains HTTP Client
 
 **HTTP layer**
 - **Standard library `net/http`** with Go 1.22+ method patterns. A framework would add little
-  for nine operations. The middleware chain, request ID → access log → recover → auth → body
-  limit, is a handful of small, separately tested functions (about 230 lines including auth).
+  for nine operations. The middleware chain, request ID → access log → recover → auth →
+  request deadline → body limit, is a handful of small, separately tested functions (about 230 lines including auth).
 - **Strict decoding:** unknown fields are rejected (a typo such as `"dosge"` must not be
   silently ignored), numbers never pass through `float64`, and the body must be exactly one
   JSON object.
@@ -274,8 +275,15 @@ requests.http             walkthrough for the JetBrains HTTP Client
 - Startup fails, listing every invalid variable at once, if anything is wrong.
 - Secrets (`DATABASE_URL`, `API_KEYS`) are redacted in every print path, including logs,
   `%v`/`%+v`/`%#v` and JSON.
-- Cross-checks: `PRICING_BUDGET` must be below `HTTP_WRITE_TIMEOUT`, and `ADMIN_ADDR` must
-  differ from `HTTP_ADDR`.
+- Cross-checks: `PRICING_BUDGET` < `REQUEST_TIMEOUT` < `HTTP_WRITE_TIMEOUT`, and `ADMIN_ADDR`
+  must differ from `HTTP_ADDR`.
+
+**Timeouts.** Each layer ends before the one outside it, so the client always gets an answer:
+- `DB_STATEMENT_TIMEOUT` (5 s) stops a single query on the server.
+- `REQUEST_TIMEOUT` (10 s) is a deadline on all the work behind one authenticated request.
+  When it, or the statement timeout, expires, the API answers 503 problem+json with
+  `Retry-After: 1`.
+- `HTTP_WRITE_TIMEOUT` (15 s) is the last resort: past it, the connection is dropped.
 
 **Authentication.**
 - **Header and challenge:** clients send `X-API-Key`; keys are configured as `API_KEYS=id:key,…`
@@ -316,6 +324,10 @@ requests.http             walkthrough for the JetBrains HTTP Client
 - The access log records method, path, status, bytes and duration. Bodies, query strings and
   headers are never logged.
 - Probes are logged at debug level, so they don't drown real traffic.
+- Levels follow who has to act. 5xx responses are `ERROR`. A client that disconnects
+  mid-request is recorded as status `499` at `INFO`, since nothing failed on our side. A pricing
+  network that misses the budget is `DEBUG` (the budget working as designed); one that returns
+  an error is `WARN`.
 
 **Build info.**
 - `GET /version` and the startup log report the module version, commit, commit time, a
