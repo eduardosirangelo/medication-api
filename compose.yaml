@@ -1,11 +1,15 @@
 # Local stack. Credentials and the API key here are for local use only.
 #   make db-up   just the database (for `make dev` / `go run`)
 #   make up      everything: db → migrate → seed → api on 127.0.0.1:8080
-name: medication-api
+#
+# No fixed project name or image tag: the project is named after the checkout
+# directory, so containers, volume and images belong to this checkout only.
+# To run a second checkout next to this one, give it its own name and ports:
+#   COMPOSE_PROJECT_NAME=medication-api-b API_PORT=8081 DB_PORT=5433 make up
+# (or set the three in that checkout's .env, and point its DATABASE_URL at DB_PORT).
 
 x-app: &app
   build: .
-  image: medication-api:local
   environment: &app-env
     DATABASE_URL: postgres://medication:medication@db:5432/medication?sslmode=disable
     LOG_LEVEL: info
@@ -18,7 +22,7 @@ services:
       POSTGRES_PASSWORD: medication
       POSTGRES_DB: medication
     ports:
-      - "127.0.0.1:5432:5432" # loopback only: never expose the dev DB on the LAN
+      - "127.0.0.1:${DB_PORT:-5432}:5432" # loopback only: never expose the dev DB on the LAN
     volumes:
       # PostgreSQL 18 images keep data in a versioned subdirectory of this path.
       - pgdata:/var/lib/postgresql
@@ -50,7 +54,7 @@ services:
       API_KEYS: local-dev:local-dev-key-change-me # same key as .env.example
       SHUTDOWN_DRAIN_DELAY: 0s # no load balancer to drain locally
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${API_PORT:-8080}:8080"
     depends_on:
       seed: { condition: service_completed_successfully }
     healthcheck:

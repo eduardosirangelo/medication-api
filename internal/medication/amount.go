@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// Amount is an exact, non-negative decimal with at most 4 fractional digits,
-// held as an integer count of ten-thousandths (500 mg → 5_000_000). It mirrors
-// NUMERIC(12,4).
+// Amount is an exact, positive decimal with at most 4 fractional digits, held
+// as an integer count of ten-thousandths (500 mg → 5_000_000). It mirrors
+// NUMERIC(12,4). Zero is the unset value, which validation rejects.
 //
 // A fixed-point integer instead of float64 keeps 0.1 exact and makes amounts
 // comparable with ==, which duplicate detection relies on. Excess precision

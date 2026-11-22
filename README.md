@@ -72,9 +72,17 @@ make dev               # db-up, build, migrate, seed, then the API in the foregr
                        # Ctrl+C stops the API gracefully; `make stop` stops the database
 ```
 
+**Requirements:** PostgreSQL 15 or later if you bring your own database (the unique index
+uses `NULLS NOT DISTINCT`); tested on 18.
+
 `make up` and `make dev` both use port 8080, so run one at a time. `make up` refuses to start
 if something else already answers there. A local API bound to `[::]:8080` and Docker bound to
 `127.0.0.1:8080` can coexist without error, and `localhost` would then quietly reach the wrong one.
+
+The compose project is named after the checkout directory. To run a second checkout alongside,
+give it its own project name and ports:
+`COMPOSE_PROJECT_NAME=medication-api-b API_PORT=8081 DB_PORT=5433 make up` (`make smoke`
+follows `API_PORT`).
 
 **Postman/Insomnia:** import `openapi.yaml` and set the `X-API-Key` header.
 
@@ -208,12 +216,22 @@ openapi.yaml              API contract (OpenAPI 3.1)
 requests.http             walkthrough for the JetBrains HTTP Client
 ```
 
+### If you only read three files
+
+1. [`internal/medication/handler.go`](internal/medication/handler.go): the HTTP contract.
+   Strict decoding, `If-Match` rules, and how every domain error maps to a status.
+2. [`internal/medication/postgres.go`](internal/medication/postgres.go), `Update`: the
+   conditional `UPDATE … WHERE version = ANY($2)` that makes optimistic concurrency one atomic
+   step, and `translate`, which maps PostgreSQL errors to domain errors.
+3. [`internal/pricing/comparer.go`](internal/pricing/comparer.go): the fan-out under a
+   latency budget. The buffered channel keeps late networks from leaking goroutines.
+
 ## Design decisions and trade-offs
 
 **HTTP layer**
 - **Standard library `net/http`** with Go 1.22+ method patterns. A framework would add little
   for nine operations. The middleware chain, request ID → access log → recover → auth →
-  request deadline → body limit, is a handful of small, separately tested functions (about 230 lines including auth).
+  request deadline → body limit, is a handful of small, separately tested functions (about 350 lines including auth).
 - **Strict decoding:** unknown fields are rejected (a typo such as `"dosge"` must not be
   silently ignored), numbers never pass through `float64`, and the body must be exactly one
   JSON object.
@@ -229,6 +247,9 @@ requests.http             walkthrough for the JetBrains HTTP Client
   one wins; an integration test races ten of them.
   - `If-Match` is required on PUT, because a lost update is silent data loss.
   - It is optional on DELETE, because deleting stale data loses nothing.
+  - `If-Match: *` is refused on PUT (428), since it would match any version. On DELETE it
+    means "unconditional", and a missing row returns 404, by choice. RFC 9110 would answer 412,
+    but 404 tells the client what actually happened.
 - **Soft delete:** deleted rows stay for audit, and a delete bumps the version so any
   outstanding ETag goes stale.
   - The unique indexes are partial (`WHERE deleted_at IS NULL`), so a deleted product can be
@@ -315,6 +336,10 @@ requests.http             walkthrough for the JetBrains HTTP Client
 **Probes and shutdown.**
 - `/healthz` never checks dependencies, so a database outage doesn't restart the pod.
 - `/readyz` pings the database with an 800 ms timeout, below the 1 s Kubernetes default.
+  - The ping uses the shared pool, a deliberate trade-off: it is simple and tests the path real
+    requests take. When the pool is exhausted, though, every replica turns unready at once, and
+    a saturated fleet drops out of rotation. TODO: a dedicated connection, or a pool-stats check
+    that treats "busy" differently from "down".
 - On SIGTERM, `/readyz` starts failing first. After `SHUTDOWN_DRAIN_DELAY` (5 s) the server
   stops accepting connections, then drains in-flight requests for up to `SHUTDOWN_TIMEOUT` (20 s).
 - A second signal exits immediately.
@@ -365,6 +390,28 @@ requests.http             walkthrough for the JetBrains HTTP Client
 **Seed data:** `api seed` / `make seed` inserts 16 sample entries. It is idempotent (existing
 entries are skipped through the unique indexes) and is never part of `serve` or migrations. It
 only runs when invoked by name, so a production catalog cannot receive sample data by accident.
+
+## Running on AWS
+
+Not built here (no infrastructure code); this is how the pieces would map.
+- **Compute:** the image in ECR, run on ECS Fargate (EKS works the same way with the
+  Kubernetes probes).
+- **Health:** the ALB health check targets `/readyz`; the container health check runs
+  `api healthcheck`, which needs no curl.
+- **Shutdown:** ECS `stopTimeout` must exceed drain + shutdown (5 s + 20 s = 25 s), e.g. 30 s.
+  Set the ALB deregistration delay to about 30 s instead of the 300 s default, so deploys don't
+  wait five minutes per task.
+- **Database:** RDS or Aurora PostgreSQL 15+ (`pg_trgm` is supported), with
+  `sslmode=verify-full` in `DATABASE_URL`. Keep `DB_MAX_CONNS` × task count within the
+  instance's connection limit, or put RDS Proxy in front once autoscaling makes that hard.
+- **Secrets:** `DATABASE_URL` and `API_KEYS` come from Secrets Manager, injected as environment
+  variables by the task definition.
+- **Migrations:** a one-off ECS task running `api migrate` before the service rollout, never
+  `MIGRATE_ON_START`.
+- **Logs:** JSON on stdout to CloudWatch Logs; `request_id`, `status` and `key_id` are
+  queryable fields in Logs Insights.
+- **Admin listener:** `ADMIN_ADDR` (pprof) is never exposed through the ALB or a security group.
+- TODO: infrastructure as code, autoscaling policies, metrics and tracing.
 
 ## Testing
 

@@ -67,7 +67,7 @@ func run(ctx context.Context, args []string, lookup config.LookupFunc, stdout io
 	defer stop()
 	// Restoring default signal handling after the first signal lets a second
 	// Ctrl+C or SIGTERM kill the process instead of waiting out the drain.
-	go func() { <-ctx.Done(); stop() }()
+	context.AfterFunc(ctx, stop)
 
 	cfg, err := config.Load(lookup)
 	if err != nil {
@@ -242,6 +242,9 @@ func seedCatalog(ctx context.Context, cfg config.DB, log *slog.Logger) error {
 	defer pool.Close()
 
 	res, err := seed.Run(ctx, medication.NewPostgresRepository(pool), seed.Catalog, log)
+	if err != nil {
+		return err
+	}
 	log.InfoContext(ctx, "seed finished", "inserted", res.Inserted, "skipped", res.Skipped)
-	return err
+	return nil
 }

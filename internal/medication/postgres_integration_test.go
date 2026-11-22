@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -486,20 +487,20 @@ func TestPostgres_ListUsesIndexes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		query, args := buildListQuery(tt.filter, uuid.Nil, 21)
-		var plan strings.Builder
 		rows, err := testPool.Query(ctx, "EXPLAIN "+query, args...)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for rows.Next() {
-			var line string
-			_ = rows.Scan(&line)
-			plan.WriteString(line + "\n")
+		// CollectRows checks every Scan and rows.Err(): a plan cut short by an
+		// error must fail the test, not pass on the lines read so far.
+		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
 		}
-		rows.Close()
-		usesWanted := slices.ContainsFunc(tt.wantIndex, func(idx string) bool { return strings.Contains(plan.String(), idx) })
-		if !usesWanted || strings.Contains(plan.String(), "Seq Scan") {
-			t.Errorf("filter %+v: plan should use one of %v and no Seq Scan:\n%s", tt.filter, tt.wantIndex, plan.String())
+		plan := strings.Join(lines, "\n")
+		usesWanted := slices.ContainsFunc(tt.wantIndex, func(idx string) bool { return strings.Contains(plan, idx) })
+		if !usesWanted || strings.Contains(plan, "Seq Scan") {
+			t.Errorf("filter %+v: plan should use one of %v and no Seq Scan:\n%s", tt.filter, tt.wantIndex, plan)
 		}
 	}
 }

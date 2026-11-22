@@ -16,6 +16,12 @@ include .env
 export
 endif
 
+# Host ports of the Docker stack. Change them, with COMPOSE_PROJECT_NAME, to run
+# a second checkout alongside this one (see compose.yaml).
+API_PORT ?= 8080
+DB_PORT  ?= 5432
+export API_PORT DB_PORT
+
 .PHONY: help
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -36,13 +42,15 @@ dev: env-check ## One command for local dev: db-up, migrate, seed, then run the 
 # Needs only Docker: images are built in the container, no local Go or .env.
 # The port check matters: a local API (make dev) listening on [::]:8080 does
 # not stop Docker binding 127.0.0.1:8080, and `localhost` then reaches the
-# local process over IPv6 instead of the container, silently.
+# local process over IPv6 instead of the container, silently. Only this
+# project's own api container may already answer there: `docker compose ps` is
+# scoped to the compose project, so another checkout's stack counts as taken.
 .PHONY: up
-up: ## Run the full stack in Docker (db, migrate, seed, api on :8080) and wait until healthy
-	@if curl -s -o /dev/null --max-time 1 http://localhost:8080/healthz && [ -z "$$(docker compose ps -q api)" ]; then \
-		echo "error: something already serves localhost:8080 (make dev or make run?). Stop it first."; exit 1; fi
+up: ## Run the full stack in Docker (db, migrate, seed, api on API_PORT) and wait until healthy
+	@if curl -s -o /dev/null --max-time 1 http://localhost:$(API_PORT)/healthz && [ -z "$$(docker compose ps -q api)" ]; then \
+		echo "error: something already serves localhost:$(API_PORT) (make dev, make run, another checkout?). Stop it or set API_PORT."; exit 1; fi
 	docker compose up -d --build --wait
-	@echo "API ready on http://localhost:8080 (key: local-dev-key-change-me). Try: make smoke"
+	@echo "API ready on http://localhost:$(API_PORT) (key: local-dev-key-change-me). Try: make smoke"
 
 .PHONY: down
 down: ## Stop and remove the Docker stack (keeps the data volume)
@@ -78,7 +86,7 @@ seed: env-check ## Insert the sample catalog; idempotent, never run against prod
 
 .PHONY: smoke
 smoke: ## Run the end-to-end smoke test against a running API (BASE_URL, API_KEY)
-	./scripts/smoke.sh
+	BASE_URL=$${BASE_URL:-http://localhost:$(API_PORT)} ./scripts/smoke.sh
 
 .PHONY: db-up
 db-up: ## Start local PostgreSQL and wait until healthy
