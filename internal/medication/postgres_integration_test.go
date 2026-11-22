@@ -22,7 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/dbtest"
+	"github.com/eduardosirangelo/medication-api/internal/platform/dbtest"
 )
 
 var testPool *pgxpool.Pool

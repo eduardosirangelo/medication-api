@@ -14,9 +14,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/logging"
+	"github.com/eduardosirangelo/medication-api/internal/platform/requestid"
 )
 
 func newReq(t *testing.T, method, target string, body io.Reader) *http.Request {

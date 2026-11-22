@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
 )
 
 // One bad request must never take the process down or leak a stack trace.

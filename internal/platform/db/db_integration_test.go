@@ -14,10 +14,10 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/db"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/dbtest"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/health"
-	"github.com/eduardo-sirangelo/medication-api/migrations"
+	"github.com/eduardosirangelo/medication-api/internal/platform/db"
+	"github.com/eduardosirangelo/medication-api/internal/platform/dbtest"
+	"github.com/eduardosirangelo/medication-api/internal/platform/health"
+	"github.com/eduardosirangelo/medication-api/migrations"
 )
 
 var pg *dbtest.Postgres

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
 )
 
 var discard = slog.New(slog.DiscardHandler)

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/pricing"
+	"github.com/eduardosirangelo/medication-api/internal/pricing"
 )
 
 func ExampleComparer_BestPrice() {

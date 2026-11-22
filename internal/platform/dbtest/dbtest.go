@@ -15,9 +15,9 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/db"
-	"github.com/eduardo-sirangelo/medication-api/migrations"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/db"
+	"github.com/eduardosirangelo/medication-api/migrations"
 )
 
 // Keep in sync with compose.yaml so tests run against what developers use.

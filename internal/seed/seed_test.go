@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/medication"
+	"github.com/eduardosirangelo/medication-api/internal/medication"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))

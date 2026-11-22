@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
 )
 
 const basePath = "/v1/medications"

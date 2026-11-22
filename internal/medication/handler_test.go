@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
 )
 
 const paracetamolJSON = `{"name":"Paracetamol","form":"tablet","dosage":{"value":500,"unit":"mg"}}`

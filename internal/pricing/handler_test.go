@@ -17,8 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/medication"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/medication"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
 )
 
 var (

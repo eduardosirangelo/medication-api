@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
+	"github.com/eduardosirangelo/medication-api/internal/platform/requestid"
 )
 
 func decodeLines(t *testing.T, buf *bytes.Buffer) []map[string]any {

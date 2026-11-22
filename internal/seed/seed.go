@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/medication"
+	"github.com/eduardosirangelo/medication-api/internal/medication"
 )
 
 // Store is what the seeder writes to; medication.PostgresRepository

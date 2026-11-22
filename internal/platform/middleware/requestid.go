@@ -3,7 +3,7 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
+	"github.com/eduardosirangelo/medication-api/internal/platform/requestid"
 )
 
 // A well-formed inbound ID is reused so one ID follows the request across

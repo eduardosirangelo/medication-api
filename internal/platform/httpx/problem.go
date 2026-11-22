@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
+	"github.com/eduardosirangelo/medication-api/internal/platform/requestid"
 )
 
 const ProblemContentType = "application/problem+json"

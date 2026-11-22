@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/medication"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/dbtest"
+	"github.com/eduardosirangelo/medication-api/internal/medication"
+	"github.com/eduardosirangelo/medication-api/internal/platform/dbtest"
 )
 
 func TestRun_IsIdempotentAgainstPostgres(t *testing.T) {

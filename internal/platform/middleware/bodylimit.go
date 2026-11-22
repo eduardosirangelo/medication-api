@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
 )
 
 // A declared oversized Content-Length is rejected without reading anything;

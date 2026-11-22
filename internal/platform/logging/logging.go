@@ -6,7 +6,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
+	"github.com/eduardosirangelo/medication-api/internal/platform/requestid"
 )
 
 // Attached to every line so aggregated logs can be filtered by service.

@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/logging"
 )
 
 // migrationLockTimeout bounds how long a DDL statement may wait for a table

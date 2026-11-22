@@ -13,9 +13,9 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/buildinfo"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/health"
+	"github.com/eduardosirangelo/medication-api/internal/platform/buildinfo"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/health"
 )
 
 var httpMethods = []string{

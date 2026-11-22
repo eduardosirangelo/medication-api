@@ -44,4 +44,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/eduardo-sirangelo/medication-api
+        - github.com/eduardosirangelo/medication-api

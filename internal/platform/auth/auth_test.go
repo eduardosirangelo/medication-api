@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/logging"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/middleware"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/logging"
+	"github.com/eduardosirangelo/medication-api/internal/platform/middleware"
 )
 
 const (

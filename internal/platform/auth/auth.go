@@ -12,9 +12,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/middleware"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/middleware"
 )
 
 const Header = "X-API-Key"

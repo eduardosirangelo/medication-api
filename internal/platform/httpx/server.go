@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/config"
+	"github.com/eduardosirangelo/medication-api/internal/platform/config"
 )
 
 const maxHeaderBytes = 1 << 20

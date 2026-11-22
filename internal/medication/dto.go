@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
+	"github.com/eduardosirangelo/medication-api/internal/platform/httpx"
 )
 
 // Wire types are the public contract (openapi.yaml). Keeping them apart from

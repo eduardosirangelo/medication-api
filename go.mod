@@ -1,4 +1,4 @@
-module github.com/eduardo-sirangelo/medication-api
+module github.com/eduardosirangelo/medication-api
 
 go 1.27.4
 

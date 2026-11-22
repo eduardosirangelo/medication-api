@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eduardo-sirangelo/medication-api/internal/platform/requestid"
+	"github.com/eduardosirangelo/medication-api/internal/platform/requestid"
 )
 
 func readProblem(t *testing.T, rec *httptest.ResponseRecorder) Problem {
