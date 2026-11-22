@@ -456,6 +456,12 @@ Not built here (no infrastructure code); this is how the pieces would map.
 | `govulncheck` (pinned) | Reports only vulnerabilities in code that is actually reachable |
 | `go.yaml.in/yaml/v3` (tests only) | Parses `openapi.yaml` for the contract test |
 
+Tool versions are pinned in the `Makefile` (`LINT_VERSION`, `VULN_VERSION`, `REDOCLY_VERSION`), so
+every run uses the same tool. Bump a pin whenever the Go version moves past what the tool was built
+for. Analysis tools parse the code with their own copy of `golang.org/x/tools`, which can be older
+than the language: govulncheck v1.1.4 panicked on Go 1.27 syntax in CI (linux/amd64), and v1.10.0
+fixed it.
+
 ## Not done (TODO)
 
 - `Idempotency-Key` on POST, so a retried request replays the original response instead of getting 409.
