@@ -18,8 +18,8 @@ jobs:
     name: fmt, vet, lint, govulncheck, unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: make check
@@ -28,8 +28,8 @@ jobs:
     name: integration tests (testcontainers)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: make test-integration
@@ -38,7 +38,7 @@ jobs:
     name: docker stack + smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make up
       - run: make smoke
       - if: failure()
