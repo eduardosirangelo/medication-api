@@ -11,7 +11,7 @@ import (
 const MaxNameLength = 200
 
 // Input is raw, untrusted client data for creating or replacing a medication.
-// Numbers arrive as strings (from json.Number) so no float conversion ever
+// Numbers arrive as the JSON number's own text, so no float conversion ever
 // touches them; an empty string means "not provided".
 type Input struct {
 	Name   string

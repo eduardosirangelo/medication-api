@@ -469,13 +469,20 @@ func TestPostgres_ListUsesIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const trgm, byID = "medications_active_name_trgm_idx", "medications_active_id_idx"
 	tests := []struct {
-		filter    ListFilter
-		wantIndex string
+		filter ListFilter
+		// Any one of these satisfies the test; a sequential scan never does.
+		wantIndex []string
 	}{
-		{ListFilter{}, "medications_active_id_idx"},
-		{ListFilter{Form: FormLiquid}, "medications_active_form_id_idx"},
-		{ListFilter{NameContains: "rug 1234"}, "medications_active_name_trgm_idx"},
+		{ListFilter{}, []string{byID}},
+		{ListFilter{Form: FormLiquid}, []string{"medications_active_form_id_idx"}},
+		// Rare term (11 rows): only the trigram index finds them cheaply.
+		{ListFilter{NameContains: "rug 1234"}, []string{trgm}},
+		// Mid selectivity (~1,100 rows, 5%): walking the id index newest
+		// first and stopping after one page is also cheap, and the planner may
+		// prefer it. Either way, the cost is bounded.
+		{ListFilter{NameContains: "rug 12"}, []string{trgm, byID}},
 	}
 	for _, tt := range tests {
 		query, args := buildListQuery(tt.filter, uuid.Nil, 21)
@@ -490,8 +497,9 @@ func TestPostgres_ListUsesIndexes(t *testing.T) {
 			plan.WriteString(line + "\n")
 		}
 		rows.Close()
-		if !strings.Contains(plan.String(), tt.wantIndex) {
-			t.Errorf("filter %+v: plan does not use %s:\n%s", tt.filter, tt.wantIndex, plan.String())
+		usesWanted := slices.ContainsFunc(tt.wantIndex, func(idx string) bool { return strings.Contains(plan.String(), idx) })
+		if !usesWanted || strings.Contains(plan.String(), "Seq Scan") {
+			t.Errorf("filter %+v: plan should use one of %v and no Seq Scan:\n%s", tt.filter, tt.wantIndex, plan.String())
 		}
 	}
 }

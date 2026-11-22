@@ -83,8 +83,10 @@ paths:
       parameters:
         - name: name
           in: query
-          description: Case-insensitive substring of the name.
-          schema: { type: string, maxLength: 200 }
+          description: >-
+            Case-insensitive substring of the name, at least 3 characters after trimming (shorter
+            terms are a 400: the trigram index cannot serve them). Empty means no filter.
+          schema: { type: string, minLength: 3, maxLength: 200 }
         - name: form
           in: query
           schema: { $ref: '#/components/schemas/Form' }
@@ -333,7 +335,10 @@ components:
       type: number
       exclusiveMinimum: 0
       maximum: 99999999.9999
-      description: Exact decimal with at most 4 fractional digits (stored as NUMERIC(12,4), never a float).
+      description: >-
+        Exact decimal with at most 4 fractional digits (stored as NUMERIC(12,4), never a float).
+        Must be a plain JSON number: a quoted string such as `"500"` and exponent notation such
+        as `5e2` are both rejected with 422.
     DosageInput:
       type: object
       required: [value, unit]
@@ -348,7 +353,10 @@ components:
       type: object
       required: [name, form, dosage]
       additionalProperties: false
-      description: Unknown fields are rejected with 400. Every invalid field is reported at once in a 422.
+      description: >-
+        Unknown fields and wrong JSON types are rejected with 400. Every invalid field is reported
+        at once in a 422. Duplicate keys are not rejected: as in Go's `encoding/json`, the last
+        one wins.
       properties:
         name: { type: string, minLength: 1, maxLength: 200 }
         form: { $ref: '#/components/schemas/Form' }

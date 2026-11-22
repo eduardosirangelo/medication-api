@@ -90,6 +90,7 @@ capture IDs and ETags and assert status codes. Use `make smoke` or curl instead.
 | `db-up`, `migrate`, `seed`, `run` | The individual steps of `dev` |
 | `smoke` | End-to-end check against a running API (`BASE_URL`, `API_KEY`) |
 | `check` | Everything CI runs except integration: fmt, vet, lint, govulncheck, `test -race` |
+| `verify` | Full pre-commit gate: `check`, integration, fuzz, benchmarks, build, OpenAPI lint, Docker stack + smoke |
 | `test-integration` | Real PostgreSQL via testcontainers (needs Docker) |
 | `bench`, `fuzz` | Benchmarks (`b.Loop`) and fuzzing of the decimal parser |
 
@@ -98,7 +99,7 @@ capture IDs and ETags and assert status codes. Use `make smoke` or curl instead.
 | Method & path | Notes |
 |---|---|
 | `POST /v1/medications` | 201 + `Location` + `ETag`; 409 if an active entry has the same identity or NDC |
-| `GET /v1/medications` | `name` (substring), `form`, `limit` (1–100), `cursor`; newest first; `Link: rel="next"` |
+| `GET /v1/medications` | `name` (substring, ≥ 3 chars), `form`, `limit` (1–100), `cursor`; newest first; `Link: rel="next"` |
 | `GET /v1/medications/{id}` | `ETag`; `If-None-Match` → 304 |
 | `PUT /v1/medications/{id}` | Full replace; `If-Match` **required** (428 if missing, 412 if stale) |
 | `DELETE /v1/medications/{id}` | Soft delete, 204; `If-Match` optional (412 if given and stale) |
@@ -216,6 +217,11 @@ requests.http             walkthrough for the JetBrains HTTP Client
 - **Strict decoding:** unknown fields are rejected (a typo such as `"dosge"` must not be
   silently ignored), numbers never pass through `float64`, and the body must be exactly one
   JSON object.
+  - Dosage amounts must be plain JSON numbers. A quoted `"500"` (which `encoding/json` would
+    accept into a `json.Number`) and exponent notation such as `5e2` are both a 422.
+  - Duplicate keys are not rejected: `encoding/json` keeps the last one. A test pins that, so a
+    decoder change can't alter it silently. Rejecting them would need a token-level pass over
+    every body.
 
 **Concurrency and data integrity**
 - **Optimistic concurrency with strong ETags** (`"<version>"`). The check and the write are a
@@ -242,6 +248,11 @@ requests.http             walkthrough for the JetBrains HTTP Client
 - **Opaque cursor bound to its filters:** the cursor is base64url and carries a fingerprint of
   the filters, so reusing it with different filters is a 400, not a silently wrong page.
 - **Name search:** `ILIKE '%term%'` backed by a `pg_trgm` GIN index.
+  - Terms must be at least 3 characters (400 otherwise): a shorter term has no trigrams, so the
+    index could not narrow anything down.
+  - Rare terms use the trigram index. For common ones the planner prefers walking the `id` index
+    newest first and stopping after one page; that is also bounded. The `EXPLAIN` test covers a
+    rare and a mid-selectivity term and rejects sequential scans.
 - **Dynamic SQL in `List`** rather than `($1 IS NULL OR …)`, so the partial indexes stay
   usable. An integration test runs `EXPLAIN` on 20k rows to confirm the indexes are used.
 
@@ -371,6 +382,10 @@ only runs when invoked by name, so a production catalog cannot receive sample da
   middleware's public paths.
 - **`make smoke`:** the same end-to-end flow against any running instance; CI runs it against
   the Docker stack.
+- **`make verify`:** the full gate I run before every commit. It runs `make check`, `go vet`
+  with the integration tag, the integration tests, 10 s of fuzzing, every benchmark once,
+  `make build` and `make openapi-lint`. It then runs `make smoke` against the Docker stack and
+  takes the stack down even if the smoke test fails. It needs Docker, Node.js, curl and jq.
 - **`make openapi-lint`:** lints `openapi.yaml` with a pinned Redocly CLI (needs Node.js). It is
   a manual step, not part of `make check` or CI. [`redocly.yaml`](redocly.yaml) turns off three
   rules, each with its reason.

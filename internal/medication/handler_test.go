@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -139,6 +140,7 @@ func TestCreate_DecodeProblems(t *testing.T) {
 		{"malformed JSON", `{"name":`, "application/json", 400},
 		{"unknown field", `{"name":"X","form":"tablet","dosage":{"value":1,"unit":"mg"},"colour":"red"}`, "application/json", 400},
 		{"value as bool", `{"name":"X","form":"tablet","dosage":{"value":true,"unit":"mg"}}`, "application/json", 400},
+		{"per_value as object", `{"name":"X","form":"tablet","dosage":{"value":1,"unit":"mg","per_value":{},"per_unit":"mL"}}`, "application/json", 400},
 		{"wrong content type", paracetamolJSON, "text/plain", 415},
 	}
 	for _, tt := range tests {
@@ -164,6 +166,73 @@ func TestCreate_ExponentNumberIsRejectedAs422(t *testing.T) {
 		`{"name":"X","form":"tablet","dosage":{"value":5e2,"unit":"mg"}}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQuotedNumbersAre422(t *testing.T) {
+	tests := map[string]struct {
+		dosage string
+		name   string
+		want   []string // "field: message"
+	}{
+		"quoted value": {`{"value":"500","unit":"mg"}`, "X", []string{
+			"dosage.value: must be a JSON number, not a string"}},
+		"quoted per_value": {`{"value":250,"unit":"mg","per_value":"5","per_unit":"mL"}`, "X", []string{
+			"dosage.per_value: must be a JSON number, not a string"}},
+		"still reports every other invalid field": {`{"value":"500","unit":"mg"}`, "", []string{
+			"dosage.value: must be a JSON number, not a string", "name: is required"}},
+		"a quoted field is reported once": {`{"value":"abc","unit":"mg"}`, "X", []string{
+			"dosage.value: must be a JSON number, not a string"}},
+		"null is absent": {`{"value":null,"unit":"mg"}`, "X", []string{
+			"dosage.value: is required"}},
+	}
+	for name, tt := range tests {
+		for _, method := range []string{http.MethodPost, http.MethodPut} {
+			t.Run(name+"/"+method, func(t *testing.T) {
+				api := newTestAPI(t)
+				path, headers := "/v1/medications", []string(nil)
+				if method == http.MethodPut {
+					created := decodeBody[medicationResponse](t, api.do(t, http.MethodPost, path, paracetamolJSON))
+					path, headers = path+"/"+created.ID, []string{"If-Match", `"1"`}
+				}
+				body := fmt.Sprintf(`{"name":%q,"form":"tablet","dosage":%s}`, tt.name, tt.dosage)
+				rec := api.do(t, method, path, body, headers...)
+
+				if rec.Code != http.StatusUnprocessableEntity {
+					t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+				}
+				var got []string
+				for _, f := range decodeBody[httpx.Problem](t, rec).Errors {
+					got = append(got, f.Field+": "+f.Message)
+				}
+				if !slices.Equal(got, tt.want) {
+					t.Errorf("errors = %q, want %q", got, tt.want)
+				}
+				if api.repo.calls > 1 || (method == http.MethodPost && api.repo.calls != 0) {
+					t.Errorf("repository called %d times for invalid input", api.repo.calls)
+				}
+			})
+		}
+	}
+}
+
+// Documented behavior, not an endorsement: encoding/json keeps the last of
+// duplicate keys. The test exists so a decoder change can't alter it silently.
+func TestCreate_WrongJSONTypeNamesTheField(t *testing.T) {
+	api := newTestAPI(t)
+	rec := api.do(t, http.MethodPost, "/v1/medications", `{"name":"X","form":"tablet","dosage":{"value":[1],"unit":"mg"}}`)
+	want := `Field "dosage.value" has the wrong JSON type (got array).`
+	if rec.Code != http.StatusBadRequest || decodeBody[httpx.Problem](t, rec).Detail != want {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestCreate_DuplicateKeysLastOneWins(t *testing.T) {
+	api := newTestAPI(t)
+	rec := api.do(t, http.MethodPost, "/v1/medications",
+		`{"name":"First","name":"Second","form":"tablet","dosage":{"value":5,"unit":"mg"}}`)
+	if rec.Code != http.StatusCreated || decodeBody[medicationResponse](t, rec).Name != "Second" {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 }
 

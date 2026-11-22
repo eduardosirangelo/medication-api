@@ -78,9 +78,18 @@ func rejectUnknownOrRepeated(q url.Values, verr *ValidationError) {
 	}
 }
 
+// MinNameFilterLength is the shortest search term the pg_trgm index can
+// serve: a shorter term yields no trigrams, so every search would read the
+// whole index or table.
+const MinNameFilterLength = 3
+
 func parseNameFilter(raw string, verr *ValidationError) string {
 	name := NormalizeName(raw)
-	if utf8.RuneCountInString(name) > MaxNameLength {
+	switch n := utf8.RuneCountInString(name); {
+	case n == 0: // no filter
+	case n < MinNameFilterLength:
+		verr.add("name", "must be at least 3 characters")
+	case n > MaxNameLength:
 		verr.add("name", "must be at most 200 characters")
 	}
 	return name

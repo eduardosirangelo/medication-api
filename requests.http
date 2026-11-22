@@ -239,6 +239,26 @@ X-API-Key: {{apiKey}}
     });
 %}
 
+### Error: dosage value sent as a string → 422 (numbers must be JSON numbers)
+POST {{baseUrl}}/v1/medications
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{"name": "Quoted", "form": "tablet", "dosage": {"value": "500", "unit": "mg"}}
+
+> {%
+    client.test("422 on dosage.value", () => {
+        client.assert(response.status === 422);
+        client.assert(response.body.errors[0].field === "dosage.value");
+    });
+%}
+
+### Error: name filter shorter than 3 characters → 400
+GET {{baseUrl}}/v1/medications?name=am
+X-API-Key: {{apiKey}}
+
+> {% client.test("400", () => client.assert(response.status === 400)); %}
+
 ### Error: malformed JSON → 400
 POST {{baseUrl}}/v1/medications
 Content-Type: application/json

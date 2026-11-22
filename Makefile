@@ -143,3 +143,17 @@ tidy: ## Tidy go.mod/go.sum
 
 .PHONY: check
 check: fmt-check vet lint vuln test ## Everything CI runs (minus integration)
+
+# The stack is taken down even when the smoke test fails, and the smoke
+# test's exit status is kept.
+.PHONY: verify
+verify: ## Full pre-commit gate: check, integration, short fuzz, one-pass benchmarks, build, OpenAPI lint, Docker stack + smoke
+	$(MAKE) check
+	go vet -tags=integration $(PKG)
+	$(MAKE) test-integration
+	$(MAKE) fuzz FUZZTIME=10s
+	go test -run='^$$' -bench=. -benchtime=1x $(PKG)
+	$(MAKE) build
+	$(MAKE) openapi-lint
+	$(MAKE) up
+	$(MAKE) smoke; status=$$?; $(MAKE) down; exit $$status

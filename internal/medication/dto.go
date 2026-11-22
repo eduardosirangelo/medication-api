@@ -2,7 +2,11 @@ package medication
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/eduardo-sirangelo/medication-api/internal/platform/httpx"
 )
 
 // Wire types are the public contract (openapi.yaml). Keeping them apart from
@@ -17,28 +21,84 @@ type medicationRequest struct {
 	Route  string        `json:"route"`
 }
 
-// json.Number keeps the decimal text untouched on its way to the domain.
 type dosageRequest struct {
-	Value    json.Number `json:"value"`
-	Unit     string      `json:"unit"`
-	PerValue json.Number `json:"per_value"`
-	PerUnit  string      `json:"per_unit"`
+	Value    decimalField `json:"value"`
+	Unit     string       `json:"unit"`
+	PerValue decimalField `json:"per_value"`
+	PerUnit  string       `json:"per_unit"`
 }
 
-func (r medicationRequest) toInput() Input {
-	return Input{
+// decimalField keeps the number's text untouched on its way to the domain,
+// like json.Number, without json.Number's leniency: encoding/json also fills
+// a json.Number from a quoted string such as "500".
+//
+// Other wrong types are recorded rather than returned as decode errors:
+// encoding/json drops the field path from errors a custom unmarshaler
+// returns, and the 400 must still name the field.
+type decimalField struct {
+	text string
+	// "" for a number or null (null means absent), else the JSON type.
+	wrongType string
+}
+
+func (d *decimalField) UnmarshalJSON(b []byte) error {
+	// The decoder has already validated the syntax, so the first byte is
+	// enough to tell the JSON type.
+	switch b[0] {
+	case 'n':
+	case '"':
+		d.wrongType = "string"
+		return json.Unmarshal(b, &d.text)
+	case 't', 'f':
+		d.wrongType = "bool"
+	case '{':
+		d.wrongType = "object"
+	case '[':
+		d.wrongType = "array"
+	default:
+		d.text = string(b)
+	}
+	return nil
+}
+
+// input converts the request for the domain, or explains why it can't: a
+// wrong JSON type is the wrong shape (400, as for every other field), while
+// a number sent as a string is well-formed but against the contract (422,
+// listed together with every other invalid field).
+func (r medicationRequest) input() (Input, *httpx.Problem) {
+	in := Input{
 		Name: r.Name,
 		Form: r.Form,
 		Dosage: DosageInput{
-			Value:    r.Dosage.Value.String(),
+			Value:    r.Dosage.Value.text,
 			Unit:     r.Dosage.Unit,
-			PerValue: r.Dosage.PerValue.String(),
+			PerValue: r.Dosage.PerValue.text,
 			PerUnit:  r.Dosage.PerUnit,
 		},
 		NDC:   r.NDC,
 		RxCUI: r.RxCUI,
 		Route: r.Route,
 	}
+	var quoted []FieldError
+	for _, f := range []struct {
+		path string
+		d    decimalField
+	}{{"dosage.value", r.Dosage.Value}, {"dosage.per_value", r.Dosage.PerValue}} {
+		switch f.d.wrongType {
+		case "":
+		case "string":
+			quoted = append(quoted, FieldError{Field: f.path, Message: "must be a JSON number, not a string"})
+		default:
+			p := httpx.NewProblem(http.StatusBadRequest,
+				fmt.Sprintf("Field %q has the wrong JSON type (got %s).", f.path, f.d.wrongType))
+			return Input{}, &p
+		}
+	}
+	if len(quoted) > 0 {
+		p := validationProblem(withSpecErrors(quoted, in))
+		return Input{}, &p
+	}
+	return in, nil
 }
 
 type medicationResponse struct {

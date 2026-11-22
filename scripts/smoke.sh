@@ -103,6 +103,10 @@ expect 422 "invalid content"
 request POST /v1/medications -H 'Content-Type: application/json' -d '{"name":'
 expect 400 "malformed JSON"
 request GET "/v1/medications?colour=red";               expect 400 "unknown query parameter"
+request GET "/v1/medications?name=am";                  expect 400 "name filter under 3 characters"
+request POST /v1/medications -H 'Content-Type: application/json' \
+  -d '{"name":"Quoted","form":"tablet","dosage":{"value":"500","unit":"mg"}}'
+expect 422 "dosage value as a string"
 
 if ((failures > 0)); then echo "$failures step(s) failed"; exit 1; fi
 echo "all steps passed"

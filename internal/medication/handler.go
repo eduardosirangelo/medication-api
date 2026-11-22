@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -48,7 +49,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, *p)
 		return
 	}
-	m, err := h.svc.Create(r.Context(), req.toInput())
+	in, p := req.input()
+	if p != nil {
+		httpx.WriteProblem(w, r, *p)
+		return
+	}
+	m, err := h.svc.Create(r.Context(), in)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
@@ -124,7 +130,12 @@ func (h *Handler) replace(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteProblem(w, r, *p)
 		return
 	}
-	m, err := h.svc.Replace(r.Context(), id, httpx.IfMatchVersions(ifMatch), req.toInput())
+	in, p := req.input()
+	if p != nil {
+		httpx.WriteProblem(w, r, *p)
+		return
+	}
+	m, err := h.svc.Replace(r.Context(), id, httpx.IfMatchVersions(ifMatch), in)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
@@ -158,6 +169,22 @@ func (h *Handler) deleteWithCondition(r *http.Request, id uuid.UUID) error {
 
 // A malformed ID can't name an existing resource, so it is a 404 like any
 // other missing URI, and the database is never asked.
+// withSpecErrors adds the domain's findings to the wire-level ones, so a
+// client still gets every invalid field in one response. A field already
+// reported at the wire level is not reported twice.
+func withSpecErrors(wire []FieldError, in Input) *ValidationError {
+	verr := &ValidationError{Fields: wire}
+	var specErr *ValidationError
+	if _, err := NewSpec(in); errors.As(err, &specErr) {
+		for _, f := range specErr.Fields {
+			if !slices.ContainsFunc(wire, func(w FieldError) bool { return w.Field == f.Field }) {
+				verr.Fields = append(verr.Fields, f)
+			}
+		}
+	}
+	return verr
+}
+
 func parseID(r *http.Request) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	return id, err == nil

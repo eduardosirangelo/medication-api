@@ -32,6 +32,9 @@ func TestParseListQuery_Valid(t *testing.T) {
 		{"limit=100", ListParams{Limit: MaxPageSize}},
 		{"name=+Amox++Cl+&form=Tablet", ListParams{ListFilter: filter, Limit: DefaultPageSize}},
 		{"name=&form=", ListParams{Limit: DefaultPageSize}},
+		{"name=amo", ListParams{ListFilter: ListFilter{NameContains: "amo"}, Limit: DefaultPageSize}},
+		// Characters, not bytes: three runes are enough.
+		{"name=%C3%A9l%C3%A9", ListParams{ListFilter: ListFilter{NameContains: "élé"}, Limit: DefaultPageSize}},
 		{
 			"name=Amox+Cl&form=tablet&cursor=" + encodeCursor(after, filter),
 			ListParams{ListFilter: filter, After: after, Limit: DefaultPageSize},
@@ -61,6 +64,8 @@ func TestParseListQuery_Invalid(t *testing.T) {
 		{"limit=-5", []string{"limit"}},
 		{"form=syrup", []string{"form"}},
 		{"name=" + strings.Repeat("a", MaxNameLength+1), []string{"name"}},
+		{"name=am", []string{"name"}},
+		{"name=+am+", []string{"name"}}, // counted after trimming
 		{"from=tablet", []string{"from"}},
 		{"form=tablet&form=capsule", []string{"form"}},
 		{"cursor=not-base64!", []string{"cursor"}},
